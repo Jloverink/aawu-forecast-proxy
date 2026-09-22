@@ -510,6 +510,10 @@ body.kiosk #clockbox .ckl{font-size:18px}
 .obsgrid .oc-rest{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:center;white-space:normal}
 .obsgrid .omadis .oc{padding-top:1px}
 .ccard .obsgrid .chgchip{display:none !important}
+.afdissue{font-family:var(--mono);font-size:12.5px;margin:0 0 7px 2px}
+.ugcdecode{color:#c9d7e4;font-size:12px;margin:2px 0 6px 14px;line-height:1.5}
+.ugcdecode .zname{cursor:help;border-bottom:1px dotted #46596d}
+.ugcdecode .zunk{color:var(--mut);font-style:italic}
 .fstamp{font-size:1.1em;font-weight:400}
 .tg .tgnowlbl{font-size:9.5px;font-weight:800;color:#a9c6de;letter-spacing:.5px}
 .tg{white-space:nowrap}
@@ -3490,21 +3494,43 @@ function evalClass(arcs, wdir, spd){
   if(arc.appr && spd <= arc.appr) return {cls:'appr', label:'MGMT APPROVAL', arc};
   return {cls:'over', label:'OVER LIMIT', arc};
 }
-function stationWindClass(icao, o){
+/* The wind every limit decision is judged on: the freshest certified reading,
+   MADIS when it is newer than the METAR and not expired, else the station ob.
+   The row already displays the newest wind; the classifier, the rose and the
+   FRAT table were still judging the METAR, so the board could flag a limit the
+   panel then denied. One function, used by all of them. */
+function windForLimits(icao, o){
+  const md = state.madis[icao];
+  const oT = o && o.t ? toDate(o.t) : null;
+  const dT = md && md.valid ? toDate(md.valid) : null;
+  const mdFresh = dT ? (Date.now() - dT.getTime())/60000 <= (md.syn ? 20 : 75) : false;
+  if(md && mdFresh && (!oT || dT > oT))
+    return {wdir:(md.wdir === undefined ? null : md.wdir), wspd:md.sknt||0, wgst:md.gust||0, src:(md.syn?'5-MIN':'MADIS'), t:md.valid};
+  if(o) return {wdir:(Number.isFinite(o.wdir) ? o.wdir : null), wspd:o.wspd||0, wgst:o.wgst||0, src:(o.unofficial?'MXAK':'METAR'), t:o.t};
+  return null;
+}
+const FRAT_CLS_NAME = {float:'Floats/Amphibs', c208:'C208', pc12:'PC-12'};
+/* Full evaluation: worst class plus which aircraft classes are at or over which
+   arc, so an alert can say what tripped instead of just that something did. */
+function stationWindEval(icao, o){
   const L = LIMITS[icao];
-  if(!L || !o) return 'na';
-  const spd = Math.max(o.wspd||0, o.wgst||0);
-  if(!spd) return 'ok';
+  if(!L) return {cls:'na', w:null, hits:[]};
+  const w = windForLimits(icao, o);
+  if(!w) return {cls:'na', w:null, hits:[]};
+  const spd = Math.max(w.wspd||0, w.wgst||0);
+  if(!spd) return {cls:'ok', w, hits:[]};
   const rank = {na:-1, ok:0, appr:1, over:2};
-  let worst = 'na';
+  let worst = 'na'; const hits = [];
   ['float','c208','pc12'].forEach(k=>{
     const arcs = L[k];
     if(!arcs || !arcs.length) return;
-    const r = evalClass(arcs, Number.isFinite(o.wdir) ? o.wdir : null, spd);
+    const r = evalClass(arcs, w.wdir, spd);
     if((rank[r.cls]??-1) > (rank[worst]??-1)) worst = r.cls;
+    if(r.cls === 'appr' || r.cls === 'over') hits.push({cls:r.cls, name:FRAT_CLS_NAME[k], arc:r.arc});
   });
-  return worst;
+  return {cls:worst, w, hits};
 }
+function stationWindClass(icao, o){ return stationWindEval(icao, o).cls; }
 function tailwind(wdir, spd, rwyHdg){
   if(wdir===null || wdir===undefined || !spd) return 0;
   const rad = (wdir - rwyHdg) * Math.PI/180;
@@ -3652,8 +3678,9 @@ function roseSVG(icao, size){
   const L = LIMITS[icao];
   const w = (window.lastPer||{})[icao] || {};
   const o = w.obs || {};
-  const spd = Math.max(o.wspd||0, o.wgst||0);
-  const wdir = (o.wdir===undefined)?null:o.wdir;
+  const lw = windForLimits(icao, w.obs);
+  const spd = lw ? Math.max(lw.wspd||0, lw.wgst||0) : Math.max(o.wspd||0, o.wgst||0);
+  const wdir = lw ? lw.wdir : ((o.wdir===undefined)?null:o.wdir);
   const cx=size/2, cy=size/2, R=size/2-20;
   const rings = [
     {key:'float', tag:'FLT', r1:R*0.56, r2:R*0.36},
@@ -3872,6 +3899,14 @@ async function hfFetchOne(icao){
   if(rows.length < 3){                            // just after local midnight
     try{ const j = await fetchJSON(hfUrl(icao, hfLocalDate(new Date(now - 86400000)))); rows = ((j && j.data) || []).concat(rows); }catch(e){}
   }
+  /* Keep the recent raw rows so hovering the MADIS label can show where the
+     current reading came from. Rows arrive oldest first; newest first is what
+     a reader wants. */
+  try{
+    state.madisHist = state.madisHist || {};
+    state.madisHist[icao] = rows.filter(hfIsMadis).slice(-10).reverse()
+      .map(r=>({t:r.utc_valid, raw:String(r.raw||'').trim()})).filter(r=>r.raw);
+  }catch(e){}
   return hfToMadis(rows);
 }
 async function hfFetch(list){
@@ -4088,7 +4123,10 @@ function fmtStamp(v){
   let d;
   if(v instanceof Date) d = v;
   else if(typeof v === 'number') d = new Date(v * (v < 1e12 ? 1000 : 1)); // epoch s or ms
-  else d = new Date(String(v).replace(/Z/g,'').trim().replace(' ','T')+'Z');
+  else {
+    const sv = String(v).trim();
+    d = /[+-]\d{2}:?\d{2}$/.test(sv) ? new Date(sv) : new Date(sv.replace(/Z/g,'').replace(' ','T')+'Z');
+  }
   if(isNaN(d)) return String(v);
   const parts = new Intl.DateTimeFormat('en-US',{timeZone:'America/Juneau',month:'2-digit',day:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(d);
   const g = t=>parts.find(p=>p.type===t).value;
@@ -4100,7 +4138,10 @@ function fmtLZ(v){
   let d;
   if(v instanceof Date) d = v;
   else if(typeof v === 'number') d = new Date(v * (v < 1e12 ? 1000 : 1));
-  else d = new Date(String(v).replace(/Z/g,'').trim().replace(' ','T')+'Z');
+  else {
+    const sv = String(v).trim();
+    d = /[+-]\d{2}:?\d{2}$/.test(sv) ? new Date(sv) : new Date(sv.replace(/Z/g,'').replace(' ','T')+'Z');
+  }
   if(isNaN(d)) return String(v);
   const parts = new Intl.DateTimeFormat('en-US',{timeZone:'America/Juneau',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(d);
   const g = t=>parts.find(p=>p.type===t).value;
@@ -4168,7 +4209,8 @@ function faValid(ddhhmm){
 function toDate(v){
   if(v instanceof Date) return v;
   if(typeof v === 'number') return new Date(v * (v < 1e12 ? 1000 : 1));
-  const d = new Date(String(v).replace(/Z/g,'').trim().replace(' ','T')+'Z');
+  const sv = String(v).trim();
+  const d = /[+-]\d{2}:?\d{2}$/.test(sv) ? new Date(sv) : new Date(sv.replace(/Z/g,'').replace(' ','T')+'Z');
   return isNaN(d) ? null : d;
 }
 function agoTxt(v){
@@ -4289,7 +4331,12 @@ function cancelFlips(icao, msgs){
 function detectChanges(){
   loadSnapshot();
   const snap = {};
-  STATIONS.forEach(st=>{ const w = stationWorst(st.icao, 0); snap[st.icao] = {cig:w.worstCig, vis:w.worstVis, cigSrc:w.worstCigSrc||null, visSrc:w.worstVisSrc||null, cat:w.cat, wind:stationWindClass(st.icao, w.obs)}; });
+  STATIONS.forEach(st=>{ const w = stationWorst(st.icao, 0);
+    /* Before the first METAR fetch lands, a station that normally has a METAR is
+       only half loaded; judging its wind then raised false OVER LIMIT alerts at
+       page load. Hold the verdict at na until the picture is complete. */
+    const windCls = (!state.metars[st.icao] && !st.noMetar) ? 'na' : stationWindClass(st.icao, w.obs);
+    snap[st.icao] = {cig:w.worstCig, vis:w.worstVis, cigSrc:w.worstCigSrc||null, visSrc:w.worstVisSrc||null, cat:w.cat, wind:windCls}; });
   if(state.snapshot){
     STATIONS.forEach(st=>{
       const a = state.snapshot[st.icao], b = snap[st.icao];
@@ -4323,8 +4370,22 @@ function detectChanges(){
       // wind limit transitions, same engine the rose uses
       const wRank = {na:-1, ok:0, appr:1, over:2};
       if(a.wind && b.wind && (wRank[b.wind]??-1) > (wRank[a.wind]??-1) && (b.wind==='appr' || b.wind==='over')){
-        state.alerts.unshift({t:Date.now(), icao:st.icao, name:st.name, worse:true,
-          msg: b.wind==='over' ? 'wind OVER company limit' : 'wind into management approval'});
+        /* name the wind, its source, and every class limit it reached, so the chip
+           still explains itself half an hour later when conditions have relaxed */
+        const ev = stationWindEval(st.icao, stationWorst(st.icao, 0).obs);
+        const wtx = ev.w
+          ? `${ev.w.wdir !== null ? String(ev.w.wdir).padStart(3,'0') + '\u00b0T ' : 'VRB '}${ev.w.wspd}${ev.w.wgst ? 'G' + ev.w.wgst : ''} kt (${ev.w.src})`
+          : '';
+        const lim = h => `${h.name} ${h.arc ? arcTxt(h.arc) + ' max ' + h.arc.max + ' kt' : 'limit'}`;
+        const overs = ev.hits.filter(h=>h.cls==='over').map(lim).join('; ');
+        const apprs = ev.hits.filter(h=>h.cls==='appr').map(lim).join('; ');
+        const msg = b.wind==='over'
+          ? `wind ${wtx} OVER company limit${overs ? ': ' + overs : ''}${apprs ? ' (mgmt approval band: ' + apprs + ')' : ''}`
+          : `wind ${wtx} into management approval${apprs ? ': ' + apprs : ''}`;
+        const firstHit = ev.hits.find(h=>h.cls === (b.wind==='over' ? 'over' : 'appr')) || ev.hits[0];
+        const shortTxt = `wind ${ev.w ? ev.w.wspd + (ev.w.wgst ? 'G' + ev.w.wgst : '') + ' kt ' : ''}${b.wind==='over' ? 'OVER' : 'mgmt appr'}`
+          + (firstHit ? ` ${firstHit.name}${firstHit.arc && firstHit.arc.max != null ? ' ' + firstHit.arc.max + ' kt' : ''}` : ' company limit');
+        state.alerts.unshift({t:Date.now(), icao:st.icao, name:st.name, worse:true, msg, short:shortTxt});
         flashTitle();
         playTone(b.wind==='over' ? 'over' : 'mgmt');
       }
@@ -4488,7 +4549,9 @@ function stationWorst(icao, winHrs){
     if(md.sknt > out.maxWind) out.maxWind = md.sknt;
     if(md.gust > out.gust) out.gust = md.gust;
     if(!out.obs){ // MADIS-only station (Elfin Cove observer days)
-      out.obs = {cig:md.cig, vis:md.vis, visRaw:md.vis, wx:md.wx, wdir:null, wspd:md.sknt, wgst:md.gust, raw:md.metar||('MADIS '+md.valid+'Z'), t:md.valid};
+      /* wdir was hard-coded null here, so a directional MADIS wind was judged
+         against the most restrictive arc and could cry OVER LIMIT falsely */
+      out.obs = {cig:md.cig, vis:md.vis, visRaw:md.vis, wx:md.wx, wdir:(md.wdir === undefined ? null : md.wdir), wspd:md.sknt, wgst:md.gust, raw:md.metar||('MADIS '+md.valid+'Z'), t:md.valid};
     }
   }
   const hb = (state.harbor||{})[icao];
@@ -4722,8 +4785,9 @@ function afdSectionHTML(sec, lead){
     if(/^Key Messages:/i.test(t)) return `<div style="color:var(--amber);font-weight:700;margin-top:2px">${esc(t)}</div>`;
     if(/^-/.test(t)) return `<div style="margin:2px 0 2px 8px;border-left:2px solid var(--line);padding-left:7px">${esc(t.replace(/^-\s*/,''))}</div>`;
     const sub = t.match(/^([A-Z][A-Za-z ()\/]+):\s*/);
-    if(sub) return `<div style="margin:3px 0"><b style="color:var(--ink)">${esc(sub[1])}</b> ${esc(t.slice(sub[0].length))}</div>`;
-    return `<div style="margin:3px 0">${esc(t)}</div>`;
+    const hasUgc = /[A-Z]{3}\d{3}/.test(t);
+    if(sub) return `<div style="margin:3px 0"><b style="color:var(--ink)">${esc(sub[1])}</b> ${hasUgc ? ugcDecodeHTML(t.slice(sub[0].length)) : esc(t.slice(sub[0].length))}</div>`;
+    return `<div style="margin:3px 0">${hasUgc ? ugcDecodeHTML(t) : esc(t)}</div>`;
   }).join('');
   return `<div style="margin-bottom:9px;${lead?'border:1px solid var(--amber);border-radius:6px;padding:6px 9px':''}">
     <div style="color:${lead?'var(--amber)':'var(--mut)'};font-weight:700;letter-spacing:.4px;font-size:11.5px">${esc(sec.name)}${sec.label?' <span style="color:var(--mut);font-weight:400">'+esc(sec.label)+'</span>':''}</div>
@@ -4743,6 +4807,88 @@ async function loadAFD(force){
     state.afd = {text:'', error: String((e && e.message) || e), at: Date.now()};
   }
   return state.afd;
+}
+/* ---- NWS zone decoding. Advisory lines cite zones as compressed UGC strings like
+   PKZ021-022-032>036-641>644, which nobody has memorized. The Juneau-office marine
+   zones are baked in from weather.gov/marine/ajkmz; anything not in the table (public
+   AKZ zones, renumbered zones) is looked up once from api.weather.gov and cached. */
+const NWS_ZONES = {
+  PKZ011:'Glacier Bay', PKZ012:'Northern Lynn Canal', PKZ013:'Southern Lynn Canal',
+  PKZ021:'Icy Strait', PKZ022:'Cross Sound', PKZ031:'Stephens Passage',
+  PKZ032:'Northern Chatham Strait', PKZ033:'Southern Chatham Strait',
+  PKZ034:'Frederick Sound', PKZ035:'Sumner Strait', PKZ036:'Clarence Strait',
+  PKZ053:'Yakutat Bay',
+  PKZ641:'Dixon Entrance to Cape Decision, out to 15 nm', PKZ642:'Cape Decision to Cape Edgecumbe, out to 15 nm',
+  PKZ643:'Cape Edgecumbe to Cape Spencer, out to 15 nm', PKZ644:'Cape Spencer to Cape Fairweather, out to 15 nm',
+  PKZ651:'Cape Fairweather to Icy Cape, out to 15 nm', PKZ652:'Icy Cape to Cape Suckling, out to 15 nm',
+  PKZ661:'Dixon Entrance to Cape Decision, 15 to 90 nm out', PKZ662:'Cape Decision to Cape Edgecumbe, 15 to 80 nm out',
+  PKZ663:'Cape Edgecumbe to Cape Spencer, 15 to 80 nm out', PKZ664:'Cape Spencer to Cape Fairweather, 15 to 85 nm out',
+  PKZ671:'Cape Fairweather to Icy Cape, 15 to 80 nm out', PKZ672:'Icy Cape to Cape Suckling, 15 to 80 nm out',
+  PKZ098:'SE Alaska inside waters synopsis', PKZ099:'SE Alaska outside waters synopsis',
+};
+let ZONE_NAMES = null;
+function zoneNames(){
+  if(!ZONE_NAMES){
+    ZONE_NAMES = Object.assign({}, NWS_ZONES);
+    try{ Object.assign(ZONE_NAMES, JSON.parse(localStorage.getItem('wxb_zonenames') || '{}')); }catch(e){}
+  }
+  return ZONE_NAMES;
+}
+/* Expand a UGC segment: the prefix carries forward, - separates, > is a range.
+   "PKZ021-022-032>036" becomes PKZ021, PKZ022, PKZ032..PKZ036. */
+function ugcExpand(seg){
+  const toks = String(seg||'').replace(/\s+/g,'').replace(/\.+$/,'').split('-').filter(Boolean);
+  let pfx = null; const out = [];
+  toks.forEach(t=>{
+    const m = t.match(/^([A-Z]{3})?(\d{3})(?:>(\d{3}))?$/);
+    if(!m) return;
+    if(m[1]) pfx = m[1];
+    if(!pfx) return;
+    const a = parseInt(m[2],10), b = m[3] ? parseInt(m[3],10) : parseInt(m[2],10);
+    for(let n2 = a; n2 <= Math.min(b, a + 99); n2++) out.push(pfx + String(n2).padStart(3,'0'));
+  });
+  return out;
+}
+let zoneFetchBusy = false;
+async function fetchZoneNames(ids){
+  const missing = ids.filter(z=>!zoneNames()[z]);
+  if(!missing.length || zoneFetchBusy) return;
+  zoneFetchBusy = true;
+  try{
+    const j = await fetchJSON('https://api.weather.gov/zones?id=' + missing.join(','));
+    ((j && j.features) || []).forEach(f=>{
+      const pr = f.properties || {};
+      if(pr.id && pr.name) ZONE_NAMES[pr.id] = pr.name;
+    });
+    // anything the API did not return stays unknown; remember only real names
+    const cached = {}; for(const k in ZONE_NAMES) if(!NWS_ZONES[k]) cached[k] = ZONE_NAMES[k];
+    try{ localStorage.setItem('wxb_zonenames', JSON.stringify(cached)); }catch(e){}
+    renderAFDBox();
+  }catch(e){}
+  zoneFetchBusy = false;
+}
+/* Translate every UGC string in a block of advisory text into named areas, shown
+   under the line that cited them. Unknown zones keep their code and trigger a lookup. */
+function ugcDecodeHTML(body){
+  const re = /[A-Z]{3}\d{3}(?:\s*[->]\s*(?:[A-Z]{3})?\d{3})*[-.]?/g;
+  const lines = String(body||'').split('\n');
+  const pend = [];
+  const html = lines.map(l=>{
+    const segs = l.match(re);
+    if(!segs) return esc(l);
+    const zones = [];
+    segs.forEach(g=>ugcExpand(g).forEach(z=>{ if(!zones.includes(z)) zones.push(z); }));
+    if(!zones.length) return esc(l);
+    zones.forEach(z=>{ if(!zoneNames()[z]) pend.push(z); });
+    const named = zones.map(z=>{
+      const nm = zoneNames()[z];
+      return nm ? `<span class="zname" title="${esc(z)}">${esc(nm)}</span>`
+                : `<span class="zname zunk" title="looking up ${esc(z)}">${esc(z)}</span>`;
+    }).join('<span style="color:var(--line)"> \u00b7 </span>');
+    return esc(l) + `<div class="ugcdecode">= ${zones.length} zone${zones.length>1?'s':''}: ${named}</div>`;
+  }).join('\n');
+  if(pend.length) setTimeout(()=>fetchZoneNames(pend.slice(0,60)), 0);
+  return html;
 }
 /* The aviation paragraph is the one written for us, so it leads and the rest is trimmed to
    the key messages. The whole product stays one click away rather than being the only view. */
@@ -4779,17 +4925,30 @@ function afdInlineHTML(){
     } else if(/WATCHES|WARNINGS|ADVISORIES/.test(key)){
       const active = body.split('\n').filter(l=>!/\.\.\.\s*None\.?\s*$/i.test(l.trim()) && l.trim());
       imp = /Advisory|Warning|Watch/i.test(body.replace(/WATCHES\/WARNINGS\/ADVISORIES/i, ''));
-      preview = imp ? active.join(' \u00b7 ').replace(/\s+/g, ' ').slice(0, 140) : 'None in effect';
-      inner = `<div class="afdtxt">${esc(body)}</div>`;
+      /* the preview names the areas instead of reciting zone codes */
+      let prevTxt = active.join(' \u00b7 ').replace(/\s+/g, ' ');
+      const ugcRe = /[A-Z]{3}\d{3}(?:\s*[->]\s*(?:[A-Z]{3})?\d{3})*[-.]?/g;
+      prevTxt = prevTxt.replace(ugcRe, g=>{
+        const zs = ugcExpand(g);
+        if(!zs.length) return g;
+        const nm = zs.map(z=>zoneNames()[z]).filter(Boolean);
+        const shown = nm.slice(0, 3).map(x=>x.replace(/,.*$/,''));
+        return shown.join(', ') + (zs.length > shown.length ? ` +${zs.length - shown.length} more` : '');
+      });
+      preview = imp ? prevTxt.slice(0, 160) : 'None in effect';
+      inner = `<div class="afdtxt">${ugcDecodeHTML(body)}</div>`;
     } else {
       inner = `<div class="afdtxt">${esc(body)}</div>`;
     }
     return `<details class="afdsec${imp ? ' imp' : ''}" data-key="${esc(key)}"${state.afdOpen.has(key) ? ' open' : ''}>`
       + `<summary><b>${esc(pretty(key))}</b><span class="afdprev">${esc(preview)}</span></summary>${inner}</details>`;
   }).join('');
-  const when = P.head.issued || (a.issuanceTime ? 'issued ' + fmtLZ(a.issuanceTime) : '');
-  return (out || '<span style="color:var(--mut)">No sections in the current issuance.</span>')
-    + (when ? `<div class="lbl" style="margin-top:6px">${esc(when)}</div>` : '');
+  const head = a.issuanceTime
+    ? `<div class="afdissue">issued <span class="fstamp" style="color:#c9d7e4">${fmtLZ(a.issuanceTime)}</span> <span style="color:var(--mut)">(${agoTxt(a.issuanceTime)})</span>`
+      + (P.head.issued ? ` <span style="color:var(--mut)">\u00b7 ${esc(P.head.issued)}</span>` : '')
+      + ` <span style="color:var(--mut)" title="A forecast discussion carries no expiration time. It stands until the forecaster writes the next one, normally a few times a day, and this board refetches it every cycle.">\u00b7 no expiry, replaced by the next issuance</span></div>`
+    : (P.head.issued ? `<div class="afdissue"><span style="color:var(--mut)">${esc(P.head.issued)}</span></div>` : '');
+  return head + (out || '<span style="color:var(--mut)">No sections in the current issuance.</span>');
 }
 function renderAFDBox(){
   const el = document.getElementById('afdBody');
@@ -4942,6 +5101,17 @@ function renderBoard(){
   STATIONS.forEach(s=> per[s.icao] = stationWorst(s.icao, winHrs));
   window.lastPer = per;
   for(const k in TIPS) delete TIPS[k];
+  /* Recent-observation history behind the METAR and MADIS labels. METARs come from
+     the 12 h AWC fetch already held in metarHist; MADIS rows from the IEM history. */
+  STATIONS.forEach(s2=>{
+    const mh = (state.metarHist[s2.icao]||[]).slice(0,5);
+    if(mh.length) TIPS['obm-'+s2.icao] = 'LAST ' + mh.length + ' METARS \u00b7 ' + s2.name.toUpperCase() + ' ' + s2.icao + '\n\n'
+      + mh.map(m=>fmtLZ(m.obsTime||m.reportTime) + '  ' + (m.rawOb||'').trim()).join('\n\n');
+    const dh = (state.madisHist && state.madisHist[s2.icao]) || [];
+    if(dh.length) TIPS['obd-'+s2.icao] = 'LAST ' + dh.length + ' MADIS 5-MINUTE OBS \u00b7 ' + s2.name.toUpperCase() + ' ' + s2.icao + '\n\n'
+      + dh.map(r=>fmtLZ(r.t) + '  ' + r.raw).join('\n\n')
+      + '\n\nMADIS reaches IEM 15 to 20 minutes behind real time, so the newest row here trails the field.';
+  });
 
   // ---- external cutoff stations strip ----
   renderSun();
@@ -5099,13 +5269,50 @@ function renderBoard(){
     const lo=Math.min(...f), hiF=Math.max(...f);
     return lo===hiF ? lo.toLocaleString()+' ft' : lo.toLocaleString()+' to '+hiF.toLocaleString()+' ft';
   }) + '\n\nSOURCE LINES\n' + faZ.map(z=>z.id+': '+(z.ice.join(' ')||'n/a')).join('\n');
-  TIPS['haz-ice'] = 'ICING BY QUADRANT\n' + perQuadZone(zs2=>{
-    const bits = zs2.map(z=>{
-      const m = z.ice.join(' ').match(/(ISOL|OCNL|CONT)?\s*(LGT|MOD|SEV)\s+(?:ICEIC|ICGIC|ICE)[^.]*?(\d{3}-FL\d{3}|FL\d{3}-FL\d{3}|\d{3}-\d{3})?/);
-      return m ? z.id+' '+(m[1]?m[1]+' ':'')+m[2]+(m[3]?' '+m[3].replace(/(\d{3})(?=-|$)/g, x=>parseInt(x,10)*100/1000+'k')+' ':'') : null;
+  /* Parse every icing statement in a zone's ...ICE section: qualifier, severity,
+     type and the level band, in feet. AAWU writes bands as hundreds of feet with an
+     optional FL prefix ("MOD RIME ICGIC 040-120", "LGT ICGICIP 060-FL180",
+     "SEV CLR ICGIC BLW 080"). Anything whose base starts below FL150 matters to us;
+     higher layers are kept but set aside. */
+  const iceLvl = t => t ? (String(t).startsWith('FL') ? parseInt(t.slice(2),10) : parseInt(t,10)) * 100 : null;
+  const fmtLvlFt = n => n === null ? '?' : n === 0 ? 'SFC' : (n >= 18000 ? 'FL' + Math.round(n/100) : n.toLocaleString() + ' ft');
+  const ICE_LOW_TOP = 15000;
+  function parseIceLayers(txt){
+    const out = [];
+    const re = /(ISOL|OCNL|CONT)?\s*(LGT\/MOD|MOD\/SEV|LGT|MOD|SEV)\s+((?:RIME|CLR|MXD)\s+)?(?:ICGICIP|ICEICIP|ICGIC|ICEIC|ICGIP|ICEIP|ICG|ICE)\s*(?:((?:FL)?\d{3})\s*-\s*((?:FL)?\d{3})|BLW\s+((?:FL)?\d{3}))?/g;
+    let m;
+    while((m = re.exec(String(txt||''))) !== null){
+      if(/NIL SIG|NO SIG/.test(String(txt).slice(Math.max(0, m.index-10), m.index+20))) continue;
+      const sev = m[2];
+      const rank = /SEV/.test(sev) ? 3 : /MOD/.test(sev) ? 2 : 1;
+      const base = m[6] ? 0 : iceLvl(m[4]);
+      const top = m[6] ? iceLvl(m[6]) : iceLvl(m[5]);
+      const typ = {rime:'rime', clr:'clear', mxd:'mixed'}[(m[3]||'').trim().toLowerCase()] || '';
+      out.push({qual:m[1]||'', sev, rank, type:typ,
+        base, top, low: base === null ? null : base < ICE_LOW_TOP});
+    }
+    return out;
+  }
+  {
+    const zl = faZ.map(z=>({z, layers: parseIceLayers(z.ice.join(' '))}));
+    const line = L => (L.qual ? L.qual + ' ' : '') + L.sev + (L.type ? ' ' + L.type : '')
+      + (L.base !== null ? ' ' + fmtLvlFt(L.base) + '\u2013' + fmtLvlFt(L.top) : ' (levels not stated)');
+    const lowRows = zl.map(({z, layers})=>{
+      const low = layers.filter(L=>L.low !== false);
+      if(!low.length) return null;
+      return zName(z.id) + ': ' + low.map(line).join(', ')
+        + (z.fzl !== null && z.fzl !== undefined ? ' \u00b7 FZLVL ' + z.fzl.toLocaleString() + ' ft' : '');
     }).filter(Boolean);
-    return bits.join(', ') || 'nil sig';
-  }) + '\n\nSOURCE LINES\n' + faZ.map(z=>z.id+': '+(z.ice.join(' ')||'n/a')).join('\n');
+    const hiRows = zl.map(({z, layers})=>{
+      const hi = layers.filter(L=>L.low === false);
+      return hi.length ? zName(z.id) + ': ' + hi.map(line).join(', ') : null;
+    }).filter(Boolean);
+    TIPS['haz-ice'] = 'ICING BELOW FL150 (bases under 15,000 ft), FROM THE AAWU AREA FORECAST\n'
+      + (lowRows.join('\n') || 'none forecast below FL150')
+      + (hiRows.length ? '\n\nHIGHER LAYERS ONLY (base at or above FL150)\n' + hiRows.join('\n') : '')
+      + (hz.ice ? '\n\nAIRMET ZULU\nicing ' + hz.ice : '')
+      + '\n\nSOURCE LINES\n' + faZ.map(z=>z.id+': '+(z.ice.join(' ')||'n/a')).join('\n');
+  }
   TIPS['haz-turb'] = 'TURBULENCE BY QUADRANT\n' + perQuadZone(zs2=>{
     const bits = zs2.map(z=>{
       const t = z.turb.join(' ');
@@ -5173,11 +5380,19 @@ function renderBoard(){
   }).filter(Boolean);
   TIPS['haz-ts'] = 'THUNDERSTORMS / CB IN THE AREA FORECAST\n' + tsZones.join('\n');
   if(tsZones.length) chips.unshift(`<span class="chip imp" data-tip="haz-ts" style="border-color:var(--ifr)"><b style="color:var(--ifr)">Thunderstorms/CB in window</b> (${tsZones.join(', ')}), FRAT 8 pts, CB implies possible SEV turb/ice, LLWS, IFR</span>`);
-  const iceZones = faZ.map(z=>{
-    const m = z.ice.join(' ').match(/(ISOL|OCNL|CONT)?\s*(LGT|MOD|SEV)\s+(?:ICEIC|ICGIC|ICE)[^.]*?(\d{3}-FL\d{3}|FL\d{3}-FL\d{3}|\d{3}-\d{3})?/);
-    return m ? zName(z.id)+' '+(m[1]?m[1]+' ':'')+m[2]+(m[3]?' '+m[3]:'') : null;
-  }).filter(Boolean);
-  if(iceZones.length) chips.push(`<span class="chip" data-tip="haz-ice">FA icing: <b>${iceZones.join(', ')}</b></span>`);
+  {
+    const zl = faZ.map(z=>({z, layers: parseIceLayers(z.ice.join(' ')).filter(L=>L.low !== false)})).filter(x=>x.layers.length);
+    if(zl.length){
+      const all = zl.flatMap(x=>x.layers);
+      const worst = all.reduce((a,b)=>b.rank > a.rank ? b : a, all[0]);
+      const bases = all.map(L=>L.base).filter(n=>n!==null), tops = all.map(L=>L.top).filter(n=>n!==null);
+      const band = bases.length ? fmtLvlFt(Math.min(...bases)) + '\u2013' + (tops.length ? fmtLvlFt(Math.max(...tops)) : '?') : 'levels not stated';
+      const names = zl.map(x=>zName(x.z.id));
+      const zTxt = names.slice(0,4).join(', ') + (names.length > 4 ? ` +${names.length-4} more` : '');
+      const sevCol = worst.rank >= 3 ? 'var(--ifr)' : worst.rank === 2 ? 'var(--amber)' : 'var(--ink)';
+      chips.push(`<span class="chip${worst.rank >= 2 ? ' imp' : ''}" data-tip="haz-ice"${worst.rank >= 3 ? ' style="border-color:var(--ifr)"' : ''}>Icing \u2264FL150: <b style="color:${sevCol}">${worst.qual ? worst.qual + ' ' : ''}${worst.sev} ${band}</b> (${zTxt})</span>`);
+    }
+  }
   const fogRisk = STATIONS.filter(st=>{
     const o2 = per[st.icao].obs;
     return o2 && o2.temp!==null && o2.temp!==undefined && o2.dewp!==null && o2.dewp!==undefined && (o2.temp - o2.dewp) < 1;
@@ -6180,7 +6395,7 @@ function changeChipOne(a){
   if(!a) return '';
   const parts = String(a.msg).split(', ');
   // lead with the category move if there was one, it is the part people scan for
-  const short = parts.find(p=>/\u2192/.test(p) && /\b(LIFR|IFR|MVFR|VFR)\b/.test(p)) || parts[0];
+  const short = a.short || parts.find(p=>/\u2192/.test(p) && /\b(LIFR|IFR|MVFR|VFR)\b/.test(p)) || parts[0];
   const cls = a.worse ? 'chgbad' : (a.better ? 'chggood' : 'chgneu');
   const arrow = a.worse ? '\u25bc' : (a.better ? '\u25b2' : '\u00b7');
   const title = `Changed ${fmtLZ(a.t)} (${agoTxt(a.t)}): ${a.msg}`;
@@ -6255,7 +6470,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b239-cleanexp';
+const BUILD_TAG = 'b242-windwhy';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -7772,10 +7987,10 @@ function camLinksShort(icao){
 /* Each feed labelled with its own age, so it is never ambiguous which reading came from
    where or how old it is. An observation past its issue cycle is called expired outright
    rather than left for the reader to work out from the clock. */
-function feedStamp(label, t, expired, colour){
+function feedStamp(label, t, expired, colour, tip){
   if(!t) return '';
   const age = agoTxt(t).replace(' ago','');
-  return `<b style="color:${expired ? 'var(--ifr)' : (colour || 'var(--ink)')}">${label}</b>`
+  return `<b${tip ? ` data-hovertip="${tip}" title="Hover or tap to see the recent history"` : ''} style="color:${expired ? 'var(--ifr)' : (colour || 'var(--ink)')}${tip ? ';cursor:help;border-bottom:1px dotted #46596d' : ''}">${label}</b>`
     + `<span class="fstamp" style="color:${expired ? 'var(--ifr)' : '#c9d7e4'}"> ${fmtLZ(t)} <span style="color:${expired ? 'var(--ifr)' : 'var(--mut)'}">(${age})</span>${expired ? ' EXPIRED' : ''}:</span>`;
 }
 function srcLineHTML(st, w, srcTag){
@@ -7892,13 +8107,13 @@ function nowLineParts(st, w){
           const mp = metarPartsArr;
           const rest = mp.slice(3).filter(Boolean).join(' ');
           let grid = `<span class="orow">`
-            + cell(feedStamp('METAR', mT, !!isExpired), 'oc-lbl')
+            + cell(feedStamp('METAR', mT, !!isExpired, undefined, 'obm-'+st.icao), 'oc-lbl')
             + cell(mp[0], 'oc-vis') + cell(mp[1], 'oc-sky') + cell(mp[2], 'oc-wind')
             + cell(rest + ' ' + changeChips(st.icao), 'oc-rest') + `</span>`;
           if(madisPartsArr && dT){
             const q = madisPartsArr;
             grid += `<span class="orow omadis">`
-              + cell(feedStamp('MADIS', dT, false)
+              + cell(feedStamp('MADIS', dT, false, undefined, 'obd-'+st.icao)
                 + (madisSuperseded(st.icao) ? ` <span class="supersede" title="${esc('An earlier observation from the same stream as the METAR, not a separate reading.')}">SUPERSEDED</span>` : ''), 'oc-lbl')
               + cell(q[0], 'oc-vis') + cell(q[1], 'oc-sky') + cell(q[2], 'oc-wind')
               + cell([windCompHTML(st.icao, (md.wdir === undefined ? null : md.wdir), md.sknt || 0, md.gust || 0), q[3]].filter(Boolean).join(' '), 'oc-rest')
@@ -7906,7 +8121,7 @@ function nowLineParts(st, w){
           }
           blocks.push(`<span class="obsgrid">${grid}</span>`);
         } else {
-          blocks.push(`<span class="feed">${feedStamp('METAR', mT, !!isExpired)} ${changeChips(st.icao)} ${metarLine}</span>`);
+          blocks.push(`<span class="feed">${feedStamp('METAR', mT, !!isExpired, undefined, 'obm-'+st.icao)} ${changeChips(st.icao)} ${metarLine}</span>`);
         }
         if(presParts) blocks.push(`<span class="feed presgrp">${presParts}</span>`);
         return blocks.join('');
@@ -8425,8 +8640,9 @@ function openPanel(icao, cls){
   const L = LIMITS[icao];
   const w = (window.lastPer||{})[icao] || {};
   const o = w.obs || {};
-  const wdir = (o.wdir===undefined)?null:o.wdir;
-  const spd = Math.max(o.wspd||0, o.wgst||0);
+  const lw = windForLimits(icao, o);
+  const wdir = lw ? lw.wdir : ((o.wdir===undefined)?null:o.wdir);
+  const spd = lw ? Math.max(lw.wspd||0, lw.wgst||0) : Math.max(o.wspd||0, o.wgst||0);
   const parts = [];
 
   if((w.maxWshear||0) > GLOBAL_LIMITS.wsCease)
@@ -8455,7 +8671,8 @@ function openPanel(icao, cls){
   if(!L){
     parts.push(`<h3>Limits</h3><div class="row" style="color:var(--mut)">No entry in the Wind/Weather Limits doc for this location.</div>`);
   } else {
-    parts.push(`<h3>Wind limits (current wind incl. gusts)</h3><table>
+    parts.push(`<h3>Wind limits (current wind incl. gusts)</h3>
+      ${lw ? `<div class="note" style="margin:0 0 4px">Judged on the newest certified wind: <b style="color:var(--ink)">${lw.wdir!==null?String(lw.wdir).padStart(3,'0')+'\u00b0T':'VRB'} ${lw.wspd}${lw.wgst?'G'+lw.wgst:''} kt</b> from the ${lw.src} at ${fmtLZ(lw.t)} (${agoTxt(lw.t)}). Directions here are true; the runway strip shows magnetic.</div>` : ''}<table>
       <tr><th>Class</th><th>Applicable limit</th><th>Now</th><th>Status</th></tr>
       ${limitRow('Floats/Amphibs', L.float, wdir, spd)}
       ${limitRow('C208', L.c208, wdir, spd)}
@@ -8574,6 +8791,16 @@ function showTipAt(el, key){
   tipEl.style.left = Math.max(6,xx)+'px'; tipEl.style.top = Math.max(6,yy)+'px';
   document.getElementById('tipClose').addEventListener('click', e=>{ e.stopPropagation(); hideTip(); });
 }
+/* Hovering a METAR or MADIS label shows the recent raw history without a click.
+   Moving into the tip keeps it open so long lists can be scrolled; anywhere else
+   closes it. Click-opened tips are untouched. */
+let hoverTipFrom = null;
+document.addEventListener('mouseover', e=>{
+  if(!e.target.closest) return;
+  const h = e.target.closest('[data-hovertip]');
+  if(h){ if(h !== hoverTipFrom){ hoverTipFrom = h; showTipAt(h, h.getAttribute('data-hovertip')); } return; }
+  if(hoverTipFrom && !e.target.closest('#tip')){ hoverTipFrom = null; hideTip(); }
+});
 document.addEventListener('click', e=>{
   if(e.target.closest('#tip')) return;
   const cb = e.target.closest('[data-clsfor]');
@@ -8582,6 +8809,8 @@ document.addEventListener('click', e=>{
   if(pnl){ hideTip(); openPanel(pnl.getAttribute('data-panel')); return; }
   const tEarly = e.target.closest('.cutchip[data-tip]');
   if(tEarly){ showTipAt(tEarly, tEarly.getAttribute('data-tip')); return; }
+  const hEarly = e.target.closest('[data-hovertip]');
+  if(hEarly){ showTipAt(hEarly, hEarly.getAttribute('data-hovertip')); return; }
   const ex = e.target.closest('[data-expand]');
   if(ex && !e.target.closest('svg') ){
     const icao = ex.getAttribute('data-expand');
