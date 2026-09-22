@@ -4943,11 +4943,12 @@ function afdInlineHTML(){
     return `<details class="afdsec${imp ? ' imp' : ''}" data-key="${esc(key)}"${state.afdOpen.has(key) ? ' open' : ''}>`
       + `<summary><b>${esc(pretty(key))}</b><span class="afdprev">${esc(preview)}</span></summary>${inner}</details>`;
   }).join('');
-  const head = a.issuanceTime
-    ? `<div class="afdissue">issued <span class="fstamp" style="color:#c9d7e4">${fmtLZ(a.issuanceTime)}</span> <span style="color:var(--mut)">(${agoTxt(a.issuanceTime)})</span>`
-      + (P.head.issued ? ` <span style="color:var(--mut)">\u00b7 ${esc(P.head.issued)}</span>` : '')
-      + ` <span style="color:var(--mut)" title="A forecast discussion carries no expiration time. It stands until the forecaster writes the next one, normally a few times a day, and this board refetches it every cycle.">\u00b7 no expiry, replaced by the next issuance</span></div>`
-    : (P.head.issued ? `<div class="afdissue"><span style="color:var(--mut)">${esc(P.head.issued)}</span></div>` : '');
+  const zHHMM = t => { try{ const d2 = toDate(t); return String(d2.getUTCHours()).padStart(2,'0') + ':' + String(d2.getUTCMinutes()).padStart(2,'0') + 'Z'; }catch(e){ return ''; } };
+  const head = `<div class="afdissue"><span style="color:var(--ink)">${esc(P.head.title || 'Southeast Alaska Forecast Discussion')}</span> <span style="color:var(--mut)">\u00b7 ${esc(P.head.office || 'National Weather Service Juneau AK')}</span></div>`
+    + `<div class="afdissue" style="margin-top:-4px">`
+    + (P.head.issued ? `<span style="color:var(--mut)">${esc(P.head.issued)}</span>` : '')
+    + (a.issuanceTime ? `${P.head.issued ? ' <span style="color:var(--mut)">\u00b7</span> ' : ''}issued <span class="fstamp" style="color:#c9d7e4">${fmtLZ(a.issuanceTime)} / ${zHHMM(a.issuanceTime)}</span> <span style="color:var(--mut)">(${agoTxt(a.issuanceTime)})</span>` : '')
+    + ` <span style="color:var(--mut)" title="A forecast discussion carries no expiration time. It stands until the forecaster writes the next one, normally a few times a day, and this board refetches it every cycle.">\u00b7 no expiry, replaced by the next issuance</span></div>`;
   return head + (out || '<span style="color:var(--mut)">No sections in the current issuance.</span>');
 }
 function renderAFDBox(){
@@ -6470,7 +6471,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b242-windwhy';
+const BUILD_TAG = 'b243-afdhead';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
