@@ -441,6 +441,8 @@ body.kiosk .srcline{display:none !important}
 .tafgrp.tg-tempo .tg-tag{color:var(--amber)}
 .ccard .tafgrp{font-size:.92em;padding:0 5px}
 body.kiosk .tafgrp:nth-of-type(n+4){display:none}
+body.kiosk.tvtaf2 .ccard .tafgrp:nth-of-type(n+3){display:none}
+body.kiosk.tvtaf1 .ccard .tafgrp:nth-of-type(n+2){display:none}
 body.kiosk /* NOTAM and restriction tags live on line one now, in the space past the cameras. */
 .notamgrp{display:inline-flex;gap:4px;flex-wrap:wrap;align-items:baseline;margin-left:8px}
 .lastmove b{font-weight:700}
@@ -6471,7 +6473,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b244-tvfit';
+const BUILD_TAG = 'b245-tvtaf';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -7880,16 +7882,46 @@ function fitKiosk(){
   if(!el) return;
   // never shrink below the normal desktop size; if a view genuinely cannot fit, let it scroll
   const floor = tvBig() ? TV_BIG_MIN_ZOOM : (curView === 'cards' ? 0.35 : 0.5);
-  el.style.zoom = '1';
-  const top = el.getBoundingClientRect().top;
-  const avail = Math.max(240, window.innerHeight - top - 8);
-  if(el.getBoundingClientRect().height <= 0) return;
-  let lo = floor, hi = 6, best = floor;
-  for(let i = 0; i < 11; i++){
-    const mid = (lo + hi) / 2;
-    el.style.zoom = String(mid);
-    if(el.getBoundingClientRect().height <= avail){ best = mid; lo = mid; }
-    else { hi = mid; }
+  const bisect = () => {
+    el.style.zoom = '1';
+    const top = el.getBoundingClientRect().top;
+    const avail = Math.max(240, window.innerHeight - top - 8);
+    if(el.getBoundingClientRect().height <= 0) return null;
+    let lo = floor, hi = 6, best = floor;
+    for(let i = 0; i < 11; i++){
+      const mid = (lo + hi) / 2;
+      el.style.zoom = String(mid);
+      if(el.getBoundingClientRect().height <= avail){ best = mid; lo = mid; }
+      else { hi = mid; }
+    }
+    return best;
+  };
+  /* On the wall the enemy of readable text is TAF depth: three periods wrap the TAF
+     onto a second line on half the stations, every card grows a line, and the fit
+     shrinks all sixteen stations to pay for it. So detail gives way before text
+     size: try the full three periods, and if the resulting zoom would be squint
+     territory, drop to two periods, then to just the period in force. The desk
+     view is untouched and the full TAF is always one click away. */
+  const TV_READABLE_ZOOM = 0.62;
+  document.body.classList.remove('tvtaf2','tvtaf1');
+  let best = bisect();
+  if(best === null) return;
+  if(curView === 'cards' && !tvBig()){
+    let kept = '';
+    for(const lv of ['tvtaf2','tvtaf1']){
+      if(best >= TV_READABLE_ZOOM) break;
+      document.body.classList.remove('tvtaf2','tvtaf1');
+      document.body.classList.add(lv);
+      const b2 = bisect();
+      if(b2 === null) break;
+      if(b2 <= best + 0.01){            // trimming bought nothing, keep the deeper detail
+        document.body.classList.remove('tvtaf2','tvtaf1');
+        if(kept) document.body.classList.add(kept);
+        bisect();
+        break;
+      }
+      best = b2; kept = lv;
+    }
   }
   // Large means the floor wins even when the content spills past the bottom; paging covers it
   el.style.zoom = String(Math.round(Math.max(best, floor) * 1000) / 1000);
