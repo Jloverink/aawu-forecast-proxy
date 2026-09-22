@@ -6471,7 +6471,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b243-afdhead';
+const BUILD_TAG = 'b244-tvfit';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -7837,6 +7837,24 @@ function setTvBig(on){
   try{ fitKiosk(); }catch(e){}
   tvPageSync();
 }
+/* Everything above the station board loads on its own clock: the forecast discussion
+   arrives seconds after first paint and grows the box, sections fold and unfold, the
+   hazard chips change every cycle. Each of those pushes the board down after fitKiosk
+   already sized it, which is how stations ended up off the bottom of the TV. Refit
+   whenever the height of anything above the board changes. */
+(function(){
+  if(typeof ResizeObserver === 'undefined') return;
+  let t = null;
+  const ro = new ResizeObserver(()=>{
+    if(!document.body.classList.contains('kiosk')) return;
+    clearTimeout(t);
+    t = setTimeout(()=>{ try{ fitKiosk(); }catch(e){} }, 150);
+  });
+  const arm = () => ['afdBody','hazards','alerts','warnbox','jawsBanner','sigmetBanner','sensorBanner','suntrack'].forEach(id=>{
+    const n = document.getElementById(id); if(n) ro.observe(n);
+  });
+  document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', arm) : arm();
+})();
 /* Paging only exists because Large deliberately overflows. It scrolls the board a screenful
    at a time and returns to the top, so nothing is lost, it just takes a few seconds longer. */
 let tvPageTimer = null;
@@ -7861,7 +7879,7 @@ function fitKiosk(){
   const el = document.getElementById(ids[curView] || 'cardsWrap');
   if(!el) return;
   // never shrink below the normal desktop size; if a view genuinely cannot fit, let it scroll
-  const floor = tvBig() ? TV_BIG_MIN_ZOOM : (curView === 'cards' ? 0.55 : 1);
+  const floor = tvBig() ? TV_BIG_MIN_ZOOM : (curView === 'cards' ? 0.35 : 0.5);
   el.style.zoom = '1';
   const top = el.getBoundingClientRect().top;
   const avail = Math.max(240, window.innerHeight - top - 8);
