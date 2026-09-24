@@ -326,6 +326,7 @@ body.tri .chipbreak{display:block;flex-basis:100%;height:0;margin:0}
 .sectag:hover .seccaret{opacity:1}
 .ml.secfold{opacity:.72}
 .ml.secfold:hover{opacity:1}
+.ntmpre{white-space:pre-wrap;font-family:var(--mono);font-size:11.5px;line-height:1.5}
 .notamhead{color:var(--ifr);font-weight:800;font-family:var(--mono);font-size:11.5px;line-height:1.45;
   background:rgba(226,87,75,.14);border:1px solid var(--ifr);border-radius:5px;padding:4px 8px;margin:0 0 5px}
 .notamline{display:flex;gap:7px;align-items:baseline;font-family:var(--mono);font-size:11.5px;line-height:1.45;
@@ -930,12 +931,12 @@ const CORRIDORS = [
   {dest:'TKE',  label:'Juneau to Tenakee',    via:['PAJN','TKE'], zones:['JC']},
   {dest:'PEC',  label:'Juneau to Pelican',    via:['PAJN','PAOH','PAEL','PEC'], zones:['JC','JB','JF']},
   {dest:'PAGN', label:'Juneau to Angoon',     via:['PAJN','PAGN'], zones:['JC']},
-  {dest:'PAFE', label:'Juneau to Kake',       via:['PAJN','PAGN','PAFE'], zones:['JC','JD']},
-  {dest:'PASI', label:'Juneau to Sitka',      via:['PAJN','PAGN','PASI'], zones:['JC','JF']},
-  {dest:'PAKW', label:'Juneau to Klawock',    via:['PAJN','PAFE','PAKW'], zones:['JC','JD']},
+  {dest:'PAFE', label:'Juneau to Kake',       via:['PAJN','PAGN','PAFE'], zones:['JC','JD'], alt:{c208:[6000,10000], pc12:[12000,18000]}},
+  {dest:'PASI', label:'Juneau to Sitka',      via:['PAJN','PAGN','PASI'], zones:['JC','JF'], alt:{c208:[6000,10000], pc12:[12000,18000]}},
+  {dest:'PAKW', label:'Juneau to Klawock',    via:['PAJN','PAFE','PAKW'], zones:['JC','JD'], alt:{c208:[6000,10000], pc12:[12000,18000]}},
   {dest:'PAKT', label:'Juneau to Ketchikan',  via:['PAJN','PAFE','PAKW','PAKT'], zones:['JC','JD']},
-  {dest:'PAPG', label:'Juneau to Petersburg', via:['PAJN','PAGN','PAFE','PAPG'], zones:['JC','JD']},
-  {dest:'PAWG', label:'Juneau to Wrangell',   via:['PAJN','PAGN','PAFE','PAPG','PAWG'], zones:['JC','JD']},
+  {dest:'PAPG', label:'Juneau to Petersburg', via:['PAJN','PAGN','PAFE','PAPG'], zones:['JC','JD'], alt:{c208:[6000,10000], pc12:[12000,18000]}},
+  {dest:'PAWG', label:'Juneau to Wrangell',   via:['PAJN','PAGN','PAFE','PAPG','PAWG'], zones:['JC','JD'], alt:{c208:[6000,10000], pc12:[12000,18000]}},
   {dest:'PAYA', label:'Juneau to Yakutat',    via:['PAJN','PAGS','PAYA'], zones:['JB','JE']},
 ];
 const TIDE_STNS = [
@@ -1918,6 +1919,7 @@ function parseNmsNotams(env){
       cls: String(n.classification||'').toUpperCase(),
       startMs, endMs, perm: endMs === Infinity,
       feature: n.feature || null, issued: n.issued || null,
+      qcode: String(n.selectionCode||'').toUpperCase() || null,
     };
     (buckets[icao] = buckets[icao] || []).push(rec);
   });
@@ -4530,6 +4532,8 @@ function agesLine(icao){
 }
 
 /* Worst case across the current METAR plus every TAF group overlapping the window */
+const MX_FOR_STATION = { PEC:'Pelican', TKE:'Tenakee', PAEL:'George Island', PAGS:'Gustavus Dock' };
+
 function stationWorst(icao, winHrs){
   const m = state.metars[icao];
   const out = {icao, obs:null, madis:null, worstCig:null, worstVis:null, wx:new Set(), maxWind:0, gust:0, llws:false, cat:'NA', tafWorst:null};
@@ -4716,18 +4720,131 @@ function fromLabel(f){
   if(f.starts) lab += ' begins ' + fmtLZ(f.starts);
   return lab;
 }
+/* Parse every icing statement in a zone's ...ICE section: qualifier, severity,
+   type and the level band, in feet. AAWU writes bands as hundreds of feet with an
+   optional FL prefix ("MOD RIME ICGIC 040-120", "LGT ICGICIP 060-FL180",
+   "SEV CLR ICGIC BLW 080"). Anything whose base starts below FL150 matters to us;
+   higher layers are kept but set aside. */
+const iceLvl = t => t ? (String(t).startsWith('FL') ? parseInt(t.slice(2),10) : parseInt(t,10)) * 100 : null;
+const fmtLvlFt = n => n === null ? '?' : n === 0 ? 'SFC' : (n >= 18000 ? 'FL' + Math.round(n/100) : n.toLocaleString() + ' ft');
+const ICE_LOW_TOP = 15000;
+function parseIceLayers(txt){
+  const out = [];
+  const re = /(ISOL|OCNL|CONT)?\s*(LGT\/MOD|MOD\/SEV|LGT|MOD|SEV)\s+((?:RIME|CLR|MXD)\s+)?(?:ICGICIP|ICEICIP|ICGIC|ICEIC|ICGIP|ICEIP|ICG|ICE)\s*(?:((?:FL)?\d{3})\s*-\s*((?:FL)?\d{3})|BLW\s+((?:FL)?\d{3}))?/g;
+  let m;
+  while((m = re.exec(String(txt||''))) !== null){
+    if(/NIL SIG|NO SIG/.test(String(txt).slice(Math.max(0, m.index-10), m.index+20))) continue;
+    const sev = m[2];
+    const rank = /SEV/.test(sev) ? 3 : /MOD/.test(sev) ? 2 : 1;
+    const base = m[6] ? 0 : iceLvl(m[4]);
+    const top = m[6] ? iceLvl(m[6]) : iceLvl(m[5]);
+    const typ = {rime:'rime', clr:'clear', mxd:'mixed'}[(m[3]||'').trim().toLowerCase()] || '';
+    out.push({qual:m[1]||'', sev, rank, type:typ,
+      base, top, low: base === null ? null : base < ICE_LOW_TOP});
+  }
+  return out;
+}
+/* Icing measured against the altitudes we actually file. Only corridors with a
+   stated cruise band get this; the rest wait for real numbers rather than guesses. */
+function corrIceHTML(c, opts){
+  if(!c.alt) return '';
+  const small = opts && opts.small;
+  const hits = [];
+  (c.zones||[]).forEach(zid=>{
+    const z = state.fa.zones[zid]; if(!z || !z.ice || !z.ice.length) return;
+    parseIceLayers(z.ice.join(' ')).forEach(L=>{
+      Object.keys(c.alt).forEach(k=>{
+        const [lo, hiA] = c.alt[k];
+        const overlaps = L.base === null
+          ? true                                      // levels not stated: cannot clear it
+          : L.base < hiA && (L.top === null || L.top > lo);
+        if(overlaps) hits.push({k, L, zid});
+      });
+    });
+  });
+  if(!hits.length) return '';
+  const worst = hits.reduce((a,b2)=>b2.L.rank > a.L.rank ? b2 : a, hits[0]);
+  const col = worst.L.rank >= 3 ? 'var(--ifr)' : 'var(--amber)';
+  const name = {c208:'C208', pc12:'PC-12'};
+  const byClass = ['c208','pc12'].map(k=>{
+    const h = hits.filter(x=>x.k === k);
+    if(!h.length) return null;
+    const w2 = h.reduce((a,b2)=>b2.L.rank > a.L.rank ? b2 : a, h[0]);
+    const band = w2.L.base === null ? 'levels not stated'
+      : fmtLvlFt(w2.L.base) + '\u2013' + fmtLvlFt(w2.L.top);
+    return `${name[k]} ${c.alt[k][0]/1000}\u2013${c.alt[k][1]/1000}k: ${(w2.L.qual?w2.L.qual+' ':'')}${w2.L.sev}${w2.L.type?' '+w2.L.type:''} ${band} (${w2.zid})`;
+  }).filter(Boolean);
+  const title = 'Forecast icing layers from the AAWU zones on this corridor that overlap the altitude band each type files. '
+    + 'C208 ' + c.alt.c208[0].toLocaleString() + '\u2013' + c.alt.c208[1].toLocaleString() + ' ft, PC-12 '
+    + c.alt.pc12[0].toLocaleString() + '\u2013' + c.alt.pc12[1].toLocaleString() + ' ft. A layer with no stated levels cannot be ruled out and is flagged for both.';
+  return `<br><span style="${small?'font-size:11px;':''}color:${col};font-weight:700;cursor:help" title="${esc(title)}">ICE in cruise band \u00b7 ${byClass.join(' \u00b7 ')}</span>`;
+}
+/* When does a forecast weather token actually begin on this corridor? The FA zone
+   lines carry their own windows and the TAF groups their own start times, so the
+   corridor table can say "from 13:00L" instead of implying thunderstorms are on
+   the route right now. */
+function corrWxStart(c, tok, nowMs){
+  let best = null, activeNow = false;
+  (c.zones||[]).forEach(zid=>{
+    const z = state.fa.zones[zid]; if(!z) return;
+    (z.lines||[]).forEach(l=>{
+      if(!l.conds || !l.conds.wx || !l.conds.wx.has(tok)) return;
+      const from = l.from ? l.from.getTime() : null;
+      const to = l.to ? l.to.getTime() : null;
+      if(to !== null && to < nowMs) return;
+      if(from === null || from <= nowMs){ activeNow = true; return; }
+      if(best === null || from < best) best = from;
+    });
+  });
+  (c.via||[]).forEach(icao=>{
+    const t = state.tafs[icao]; if(!t) return;
+    (t.fcsts||[]).forEach(f=>{
+      if(!wxTokens(f.wxString).includes(tok)) return;
+      const from = (f.timeFrom||0)*1000, to = (f.timeTo||0)*1000;
+      if(to && to < nowMs) return;
+      if(from <= nowMs){ activeNow = true; return; }
+      if(best === null || from < best) best = from;
+    });
+  });
+  return activeNow ? {now:true} : (best !== null ? {at:best} : null);
+}
+/* The corridor weather, honest about time: what stations are reporting this minute,
+   what the forecast holds active right now, and what is coming with its start time.
+   Upcoming weather is grouped by when it begins so nothing future reads as present. */
+function corrWxHTML(c, opts){
+  const small = opts && opts.small;
+  const nowMs = Date.now();
+  const observed = wxSummary([...c.now.wx]);
+  const added = [...c.wx].filter(t=>!c.now.wx.has(t));
+  const fcstNow = [], timed = {}, untimed = [];
+  added.forEach(tok=>{
+    const st2 = corrWxStart(c, tok, nowMs);
+    if(st2 && st2.now) fcstNow.push(wxWord(tok));
+    else if(st2 && st2.at) (timed[st2.at] = timed[st2.at] || []).push(wxWord(tok));
+    else untimed.push(wxWord(tok));
+  });
+  const fs = small ? 'font-size:11px;' : '';
+  const bits = [`<span>${observed ? 'now: ' + observed : 'nothing observed on the route now'}</span>`];
+  if(fcstNow.length) bits.push(`<span style="${fs}color:var(--amber)">forecast in effect now: ${fcstNow.join(', ')}</span>`);
+  Object.keys(timed).map(Number).sort((a,b2)=>a-b2).forEach(at=>{
+    bits.push(`<span style="${fs}color:var(--amber);font-weight:700" title="Not active yet. Begins ${fmtLZ(at)} local per the FA zone lines and TAF groups on this corridor.">not yet \u00b7 from ${fmtLZ(at)}: ${timed[at].join(', ')}</span>`);
+  });
+  if(untimed.length) bits.push(`<span style="${fs}color:var(--amber)">later in window: ${untimed.join(', ')}</span>`);
+  return bits.join('<br>');
+}
 function corrSummary(c){
   const changed = (c.cat !== c.now.cat || c.cig !== c.now.cig || c.vis !== c.now.vis);
   const ts = [c.cigFrom && c.cigFrom.starts, c.visFrom && c.visFrom.starts].filter(Boolean);
   const startT = ts.length ? Math.min(...ts) : null;
-  const nowBit = `NOW <b class="worst cat-${c.now.cat}" style="font-size:10.5px;padding:0 6px">${c.now.cat}</b> cig <b>${fmtCig(c.now.cig)}</b> vis <b>${c.now.vis===null?'?':visTxt(c.now.visRaw ?? c.now.vis)+' sm'}</b>`
-    + (changed ? ` <span style="color:var(--amber)">\u2192 WINDOW <b class="worst cat-${c.cat}" style="font-size:10.5px;padding:0 6px">${c.cat}</b>${startT?' starting '+fmtLZ(startT):''}</span>` : ' <span style="color:var(--mut)">(no change in window)</span>');
+  const nowBit = `NOW <b class="worst cat-${c.now.cat}" style="font-size:12px;padding:1px 9px;font-weight:800;letter-spacing:.4px">${c.now.cat}</b> cig <b>${fmtCig(c.now.cig)}</b> vis <b>${c.now.vis===null?'?':visTxt(c.now.visRaw ?? c.now.vis)+' sm'}</b>`
+    + (changed ? ` <span style="color:var(--amber)">\u2192 WINDOW <b class="worst cat-${c.cat}" style="font-size:12px;padding:1px 9px;font-weight:800;letter-spacing:.4px">${c.cat}</b>${startT?' starting '+fmtLZ(startT):''}</span>` : ' <span style="color:var(--mut)">(no change in window)</span>');
   return `<div style="border:1px solid var(--amber);border-radius:6px;padding:5px 8px;margin-bottom:6px">
     <div style="color:var(--amber);font-weight:700">CONTROLLING ${esc(c.label.toUpperCase())}</div>
     <div style="font-size:11.5px">${nowBit}</div>
     <div style="font-size:11.5px">CIG <b class="drv">${fmtCig(c.cig)}</b>${c.cigFrom?' <span style="color:var(--mut)">\u2190 '+fromLabel(c.cigFrom)+'</span>':''}
       &nbsp;\u2022&nbsp; VIS <b class="drv">${c.vis===null?'?':visTxt(c.visRaw ?? c.vis)+' sm'}</b>${c.visFrom?' <span style="color:var(--mut)">\u2190 '+fromLabel(c.visFrom)+'</span>':''}</div>
-    <div style="font-size:11.5px;color:var(--mut)">WX: ${wxSummary([...c.wx])||'none'}</div>
+    <div style="font-size:11.5px;color:var(--mut)">WX \u00b7 ${corrWxHTML(c)}</div>
+    ${(function(){ const ih = corrIceHTML(c); return ih ? `<div style="font-size:11.5px">${ih.replace(/^<br>/,'')}</div>` : ''; })()}
   </div>`;
 }
 /* ================= NWS Area Forecast Discussion (AFDAJK) =================
@@ -5046,7 +5163,7 @@ function corrTafBlock(via, c){
       const wx = wxTokens(f.wxString).map(wxWord).join(', ');
       const cat = flightCat(cg, vv);
       const isDriver = (cigTaf && cg !== null && cg === c.cig) || (visTaf && vv !== null && vv === c.vis);
-      return `<div class="mono ${isDriver?'srcwin':''}" style="font-size:11px"><span style="color:var(--amber);font-weight:700">${lbl}</span> ${fmtLZ(f.timeFrom*1000)}\u2013${fmtLZ(f.timeTo*1000)} <span class="worst cat-${cat}" style="font-size:9.5px;padding:0 5px">${cat}</span> cig <b>${fmtCig(cg)}</b> vis <b>${vv===null?'?':visTxt(f.visib)+' sm'}</b>${wnd?' wind '+wnd:''}${wx?' \u00b7 '+wx:''}</div>`;
+      return `<div class="mono ${isDriver?'srcwin':''}" style="font-size:11px"><span style="color:var(--amber);font-weight:700">${lbl}</span> ${fmtLZ(f.timeFrom*1000)}\u2013${fmtLZ(f.timeTo*1000)} <span class="worst cat-${cat}" style="font-size:11.5px;padding:1px 8px;font-weight:800;letter-spacing:.4px">${cat}</span> cig <b>${fmtCig(cg)}</b> vis <b>${vv===null?'?':visTxt(f.visib)+' sm'}</b>${wnd?' wind '+wnd:''}${wx?' \u00b7 '+wx:''}</div>`;
     }).join('');
     return `<div class="${tag?'srcwin':'srcdim'}" style="margin-bottom:6px"><b style="color:var(--ink)">${esc(nm)} ${icao}</b>${tag?'<b class="drv">'+tag+'</b>':''}
       <span style="color:var(--mut);font-size:10.5px">issued ${fmtLZ(t.issueTime)}, valid ${fmtLZ(t.validTimeFrom)} to ${fmtLZ(t.validTimeTo)}</span>${tafExpiryTag(t)}
@@ -5272,50 +5389,36 @@ function renderBoard(){
     const lo=Math.min(...f), hiF=Math.max(...f);
     return lo===hiF ? lo.toLocaleString()+' ft' : lo.toLocaleString()+' to '+hiF.toLocaleString()+' ft';
   }) + '\n\nSOURCE LINES\n' + faZ.map(z=>z.id+': '+(z.ice.join(' ')||'n/a')).join('\n');
-  /* Parse every icing statement in a zone's ...ICE section: qualifier, severity,
-     type and the level band, in feet. AAWU writes bands as hundreds of feet with an
-     optional FL prefix ("MOD RIME ICGIC 040-120", "LGT ICGICIP 060-FL180",
-     "SEV CLR ICGIC BLW 080"). Anything whose base starts below FL150 matters to us;
-     higher layers are kept but set aside. */
-  const iceLvl = t => t ? (String(t).startsWith('FL') ? parseInt(t.slice(2),10) : parseInt(t,10)) * 100 : null;
-  const fmtLvlFt = n => n === null ? '?' : n === 0 ? 'SFC' : (n >= 18000 ? 'FL' + Math.round(n/100) : n.toLocaleString() + ' ft');
-  const ICE_LOW_TOP = 15000;
-  function parseIceLayers(txt){
-    const out = [];
-    const re = /(ISOL|OCNL|CONT)?\s*(LGT\/MOD|MOD\/SEV|LGT|MOD|SEV)\s+((?:RIME|CLR|MXD)\s+)?(?:ICGICIP|ICEICIP|ICGIC|ICEIC|ICGIP|ICEIP|ICG|ICE)\s*(?:((?:FL)?\d{3})\s*-\s*((?:FL)?\d{3})|BLW\s+((?:FL)?\d{3}))?/g;
-    let m;
-    while((m = re.exec(String(txt||''))) !== null){
-      if(/NIL SIG|NO SIG/.test(String(txt).slice(Math.max(0, m.index-10), m.index+20))) continue;
-      const sev = m[2];
-      const rank = /SEV/.test(sev) ? 3 : /MOD/.test(sev) ? 2 : 1;
-      const base = m[6] ? 0 : iceLvl(m[4]);
-      const top = m[6] ? iceLvl(m[6]) : iceLvl(m[5]);
-      const typ = {rime:'rime', clr:'clear', mxd:'mixed'}[(m[3]||'').trim().toLowerCase()] || '';
-      out.push({qual:m[1]||'', sev, rank, type:typ,
-        base, top, low: base === null ? null : base < ICE_LOW_TOP});
-    }
-    return out;
-  }
-  {
-    const zl = faZ.map(z=>({z, layers: parseIceLayers(z.ice.join(' '))}));
-    const line = L => (L.qual ? L.qual + ' ' : '') + L.sev + (L.type ? ' ' + L.type : '')
+  (function(){
+    const iceZl = faZ.map(z=>({z, layers: parseIceLayers(z.ice.join(' '))}));
+    const iceLine = L => (L.qual ? L.qual + ' ' : '') + L.sev + (L.type ? ' ' + L.type : '')
       + (L.base !== null ? ' ' + fmtLvlFt(L.base) + '\u2013' + fmtLvlFt(L.top) : ' (levels not stated)');
-    const lowRows = zl.map(({z, layers})=>{
+    const lowRows = iceZl.map(({z, layers})=>{
       const low = layers.filter(L=>L.low !== false);
       if(!low.length) return null;
-      return zName(z.id) + ': ' + low.map(line).join(', ')
+      return zName(z.id) + ': ' + low.map(iceLine).join(', ')
         + (z.fzl !== null && z.fzl !== undefined ? ' \u00b7 FZLVL ' + z.fzl.toLocaleString() + ' ft' : '');
     }).filter(Boolean);
-    const hiRows = zl.map(({z, layers})=>{
+    const hiRows = iceZl.map(({z, layers})=>{
       const hi = layers.filter(L=>L.low === false);
-      return hi.length ? zName(z.id) + ': ' + hi.map(line).join(', ') : null;
+      return hi.length ? zName(z.id) + ': ' + hi.map(iceLine).join(', ') : null;
     }).filter(Boolean);
     TIPS['haz-ice'] = 'ICING BELOW FL150 (bases under 15,000 ft), FROM THE AAWU AREA FORECAST\n'
       + (lowRows.join('\n') || 'none forecast below FL150')
       + (hiRows.length ? '\n\nHIGHER LAYERS ONLY (base at or above FL150)\n' + hiRows.join('\n') : '')
       + (hz.ice ? '\n\nAIRMET ZULU\nicing ' + hz.ice : '')
       + '\n\nSOURCE LINES\n' + faZ.map(z=>z.id+': '+(z.ice.join(' ')||'n/a')).join('\n');
-  }
+    const iceLow = iceZl.flatMap(x=>x.layers.filter(L=>L.low !== false));
+    if(iceLow.length){
+      const worst = iceLow.reduce((a,b)=>b.rank > a.rank ? b : a, iceLow[0]);
+      const bases = iceLow.map(L=>L.base).filter(n=>n!==null), tops = iceLow.map(L=>L.top).filter(n=>n!==null);
+      const band = bases.length ? fmtLvlFt(Math.min(...bases)) + '\u2013' + (tops.length ? fmtLvlFt(Math.max(...tops)) : '?') : 'levels not stated';
+      const names = iceZl.filter(x=>x.layers.some(L=>L.low!==false)).map(x=>zName(x.z.id));
+      const zTxt = names.slice(0,4).join(', ') + (names.length > 4 ? ' +' + (names.length-4) + ' more' : '');
+      const sevCol = worst.rank >= 3 ? 'var(--ifr)' : worst.rank === 2 ? 'var(--amber)' : 'var(--ink)';
+      chips.push('<span class="chip' + (worst.rank >= 2 ? ' imp' : '') + '" data-tip="haz-ice"' + (worst.rank >= 3 ? ' style="border-color:var(--ifr)"' : '') + '>Icing \u2264FL150: <b style="color:' + sevCol + '">' + (worst.qual ? worst.qual + ' ' : '') + worst.sev + ' ' + band + '</b> (' + zTxt + ')</span>');
+    }
+  })();
   TIPS['haz-turb'] = 'TURBULENCE BY QUADRANT\n' + perQuadZone(zs2=>{
     const bits = zs2.map(z=>{
       const t = z.turb.join(' ');
@@ -5383,6 +5486,20 @@ function renderBoard(){
   }).filter(Boolean);
   TIPS['haz-ts'] = 'THUNDERSTORMS / CB IN THE AREA FORECAST\n' + tsZones.join('\n');
   if(tsZones.length) chips.unshift(`<span class="chip imp" data-tip="haz-ts" style="border-color:var(--ifr)"><b style="color:var(--ifr)">Thunderstorms/CB in window</b> (${tsZones.join(', ')}), FRAT 8 pts, CB implies possible SEV turb/ice, LLWS, IFR</span>`);
+{
+  const zl = faZ.map(z=>({z, layers: parseIceLayers(z.ice.join(' '))}));
+  const line = L => (L.qual ? L.qual + ' ' : '') + L.sev + (L.type ? ' ' + L.type : '')
+    + (L.base !== null ? ' ' + fmtLvlFt(L.base) + '\u2013' + fmtLvlFt(L.top) : ' (levels not stated)');
+  const lowRows = zl.map(({z, layers})=>{
+    const low = layers.filter(L=>L.low !== false);
+    if(!low.length) return null;
+    return zName(z.id) + ': ' + low.map(line).join(', ')
+      + (z.fzl !== null && z.fzl !== undefined ? ' \u00b7 FZLVL ' + z.fzl.toLocaleString() + ' ft' : '');
+  }).filter(Boolean);
+  const hiRows = zl.map(({z, layers})=>{
+    const hi = layers.filter(L=>L.low === false);
+    return hi.length ? zName(z.id) + ': ' + hi.map(line).join(', ') : null;
+  }).filter(Boolean);
   {
     const zl = faZ.map(z=>({z, layers: parseIceLayers(z.ice.join(' ')).filter(L=>L.low !== false)})).filter(x=>x.layers.length);
     if(zl.length){
@@ -5507,7 +5624,7 @@ function renderBoard(){
       })()}</td>
       <td>${fmtCig(c.now.cig)}${(c.cig!==null && (c.now.cig===null || c.cig < c.now.cig))?`<br><span style="color:var(--amber);font-size:11px;font-weight:700">\u2192 ${fmtCig(c.cig)}${c.cigFrom&&c.cigFrom.starts?' starting '+fmtLZ(c.cigFrom.starts):(c.cigFrom&&c.cigFrom.src==='TAF'?tafSrcNote(c.cigFrom.icao):' later')}</span>`:''}</td>
       <td>${c.now.vis===null?'?':visTxt(c.now.visRaw ?? c.now.vis)+' sm'}${(c.vis!==null && (c.now.vis===null || c.vis < c.now.vis))?`<br><span style="color:var(--amber);font-size:11px;font-weight:700">\u2192 ${visTxt(c.visRaw ?? c.vis)} sm${c.visFrom&&c.visFrom.starts?' starting '+fmtLZ(c.visFrom.starts):(c.visFrom&&c.visFrom.src==='TAF'?tafSrcNote(c.visFrom.icao):' later')}</span>`:''}</td>
-      <td style="color:var(--mut)">${wxSummary([...c.now.wx])||'none'}${wxAdded.length?`<br><span style="color:var(--amber);font-size:11px;font-weight:700">\u2192 + ${wxAdded.map(wxWord).join(', ')}${chT?' starting '+fmtLZ(chT):''}</span>`:''}${(function(){
+      <td style="color:var(--mut)">${corrWxHTML(c, {small:true})}${corrIceHTML(c, {small:true})}${(function(){
         const f2 = c.via.filter(ic=>{ const w3=(window.lastPer||{})[ic]; const o3=w3&&w3.obs; return o3&&o3.temp!==null&&o3.temp!==undefined&&o3.dewp!==null&&o3.dewp!==undefined&&(o3.temp-o3.dewp)<1; });
         return f2.length?' <span class="flag">T/Td&lt;1 '+f2.map(ic=>(STATIONS.find(x=>x.icao===ic)||{}).name||ic).join(', ')+'</span>':'';
       })()}${c.llws?' <span class="flag">LLWS</span>':''}</td>
@@ -5574,6 +5691,7 @@ function renderBoard(){
 }
 
 /* ================= NARRATIVE ================= */
+}
 function listWords(a){
   const x = a.filter(Boolean);
   if(!x.length) return '';
@@ -6473,7 +6591,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b245-tvtaf';
+const BUILD_TAG = 'b248-notamdecode';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -7229,13 +7347,115 @@ function notamWindow(raw){
   };
 }
 function notamKey(icao, i){ return icao + '_' + i; }
-function notamDetailHTML(n, icao, i){
-  const win = notamWindow(n.raw);
+/* ---- NOTAM decoder. Translates the codes, timestamps and Q-line abbreviations
+   into plain language so a dispatcher does not need the AIM open beside them. */
+const NOTAM_Q_MAP = {
+  QFAXX:'Field condition', QFWXX:'Wind shear alert system', QFIAU:'IAP not authorized',
+  QPIAU:'Procedure not authorized', QPIXX:'Procedure change', QPICG:'Procedure changed',
+  QMRXX:'Runway marking', QMRLC:'Runway marking changed', QMAHW:'Apron work',
+  QLCAS:'Approach lighting change', QNMAS:'NAVAID unserviceable', QNMXX:'NAVAID change',
+  QFALT:'Runway lighting', QFALC:'Runway lighting change', QFATT:'Taxiway lighting',
+  QFAAH:'Aerodrome operations', QFAAS:'Aerodrome services', QFUXX:'Fuel',
+  QOBCE:'Obstruction change', QXXXX:'General', QOAXX:'Other aerodrome', QOAAS:'Other services',
+  QOALS:'Other lighting', QRDXX:'IFR route', QRDAU:'IFR route not authorized',
+  QFMXX:'Movement area', QFMAS:'Movement area change',
+};
+var _NOTAM_LOC_MAP = null;
+function NOTAM_LOC_MAP_get(){
+  if(!_NOTAM_LOC_MAP){
+    _NOTAM_LOC_MAP = Object.assign({},
+      ...STATIONS.map(st=>({[st.icao]:st.name})),
+      {JNU:'Juneau', HNS:'Haines', HNH:'Hoonah', AGN:'Angoon', AFE:'Kake', SIT:'Sitka',
+       PSG:'Petersburg', WRG:'Wrangell', KTN:'Ketchikan', YAK:'Yakutat', GST:'Gustavus',
+       SGY:'Skagway', AKW:'Klawock', KLW:'Klawock', PEC:'Pelican', TKE:'Tenakee Springs',
+       ELV:'Elfin Cove', HYG:'Hydaburg'});
+  }
+  return _NOTAM_LOC_MAP;
+}
+function notamDecode(n){
   const rows = [];
-  rows.push(`<div class="tfrrow"><span class="tfrk">Category</span><span class="tfrv" style="color:${NOTAM_CAT_COLOR[n.cat]||'var(--mut)'}">${NOTAM_CAT_LABEL[n.cat]||n.cat}</span></div>`);
-  if(win) rows.push(`<div class="tfrrow"><span class="tfrk">Valid</span><span class="tfrv">${esc(win.txt)}${win.active === false ? ' <span style="color:var(--mut)">(not currently active)</span>' : ''}</span></div>`);
-  rows.push(`<div class="tfrrow"><span class="tfrk">Full text</span><span class="tfrv" style="white-space:pre-wrap">${esc(n.raw)}</span></div>`);
-  return `<div class="tfrdet">${rows.join('')}</div>`;
+  /* NOTAM number and issuing facility */
+  if(n.id) rows.push({k:'NOTAM', v:n.id});
+  /* Facility name from the 3-letter or 4-letter location code */
+  const locMatch = String(n.raw||'').match(/^!(\w{2,4})\s/);
+  if(locMatch){
+    const code = locMatch[1].toUpperCase();
+    const name = NOTAM_LOC_MAP_get()[code];
+    rows.push({k:'Facility', v: name ? name + ' (' + code + ')' : code});
+  }
+  /* Category decoded from our classifier */
+  rows.push({k:'Category', v: NOTAM_CAT_LABEL[n.cat] || n.cat, col: NOTAM_CAT_COLOR[n.cat]});
+  /* Q-line selection code (what kind of NOTAM this is per ICAO) */
+  if(n.qcode){
+    const qName = NOTAM_Q_MAP[n.qcode] || null;
+    rows.push({k:'Q-code', v: n.qcode + (qName ? ' = ' + qName : '')});
+  }
+  /* Effective window decoded to local time with age/countdown */
+  const win = notamWindow(n.raw);
+  if(win){
+    rows.push({k:'Effective', v: win.txt + (win.active === false ? ' (not currently active)' : ' (ACTIVE NOW)')});
+  } else if(n.startMs || n.endMs){
+    const parts = [];
+    if(n.startMs) parts.push('from ' + fmtLZ(n.startMs));
+    if(n.endMs === Infinity) parts.push('to PERMANENT');
+    else if(n.endMs) parts.push('to ' + fmtLZ(n.endMs));
+    if(n.startMs && n.startMs > Date.now()) parts.push('(not yet active, starts ' + agoTxt(n.startMs/1000).replace(' ago','from now') + ')');
+    else if(n.endMs && n.endMs !== Infinity && n.endMs < Date.now()) parts.push('(expired)');
+    rows.push({k:'Effective', v: parts.join(' ')});
+  }
+  if(n.issued) rows.push({k:'Issued', v: fmtLZ(n.issued)});
+  /* The actual operational text, cleaned up with line breaks */
+  const body = String(n.body || n.raw || '').replace(/\n/g, '\n').trim();
+  const decoded = body
+    .replace(/\bIAP\b/g, 'IAP (Instrument Approach Procedure)')
+    .replace(/\bLDA\b/g, 'LDA (Localizer-type Directional Aid)')
+    .replace(/\bODP\b/g, 'ODP (Obstacle Departure Procedure)')
+    .replace(/\bSID\b/g, 'SID (Standard Instrument Departure)')
+    .replace(/\bSTAR\b/g, 'STAR (Standard Terminal Arrival)')
+    .replace(/\bRNAV\b(?!\s*\()/g, 'RNAV (Area Navigation)')
+    .replace(/\bGPS\b(?!\s*\))/g, 'GPS (Global Positioning System)')
+    .replace(/\bLPV\b/g, 'LPV (Localizer Performance with Vertical guidance)')
+    .replace(/\bLNAV\b/g, 'LNAV (Lateral Navigation)')
+    .replace(/\bVNAV\b/g, 'VNAV (Vertical Navigation)')
+    .replace(/\bDA\b(?=\s*\/|\s+\d)/g, 'DA (Decision Altitude)')
+    .replace(/\bMDA\b/g, 'MDA (Minimum Descent Altitude)')
+    .replace(/\bPROCEDURE NA\b/g, 'PROCEDURE NOT AUTHORIZED')
+    .replace(/\bAMDT\b/g, 'AMENDMENT')
+    .replace(/\bU\/S\b/g, 'UNSERVICEABLE')
+    .replace(/\bOTS\b/g, 'OUT OF SERVICE')
+    .replace(/\bDLY\b/g, 'DAILY')
+    .replace(/\bWIP\b/g, 'WORK IN PROGRESS')
+    .replace(/\bCLSD\b/g, 'CLOSED')
+    .replace(/\bFICON\b/g, 'FICON (Field Condition)')
+    .replace(/\bLLWAS\b/g, 'LLWAS (Low Level Windshear Alert System)')
+    .replace(/\bMALSR\b/g, 'MALSR (Medium Approach Lighting System with Runway alignment)')
+    .replace(/\bALSF\b/g, 'ALSF (Approach Lighting System with Sequenced Flashers)')
+    .replace(/\bODALS\b/g, 'ODALS (Omni-Directional Approach Lighting)')
+    .replace(/\bPAPI\b/g, 'PAPI (Precision Approach Path Indicator)')
+    .replace(/\bVASI\b/g, 'VASI (Visual Approach Slope Indicator)')
+    .replace(/\bREIL\b/g, 'REIL (Runway End Identifier Lights)')
+    .replace(/\bRCLL\b/g, 'RCLL (Runway Centerline Lights)')
+    .replace(/\bTDZL\b/g, 'TDZL (Touchdown Zone Lights)')
+    .replace(/\bNAVAID\b/g, 'NAVAID (Navigation Aid)')
+    .replace(/\bLOC\b(?=\s)/g, 'LOC (Localizer)')
+    .replace(/\bDME\b/g, 'DME (Distance Measuring Equipment)')
+    .replace(/\bNDB\b/g, 'NDB (Non-Directional Beacon)')
+    .replace(/\bVOT\b/g, 'VOT (VOR Receiver Test)')
+    .replace(/\bVOR\b/g, 'VOR (VHF Omnidirectional Range)')
+    .replace(/\bTACANs?\b/g, 'TACAN (Tactical Air Navigation)')
+    .replace(/\bSFC\b/g, 'Surface')
+    .replace(/\bAGL\b/g, 'AGL (Above Ground Level)')
+    .replace(/\bMSL\b/g, 'MSL (Mean Sea Level)')
+    .replace(/\bAD\b(?=\s+CLOSED|\s+CLSD)/g, 'AERODROME')
+    .replace(/\bTFR\b/g, 'TFR (Temporary Flight Restriction)')
+    .replace(/\bUAS\b/g, 'UAS (Unmanned Aircraft System)')
+    .replace(/\bEST\b(?=\s*$|\s*\))/gm, 'EST (estimated end time)');
+  rows.push({k:'Decoded text', v: decoded, pre: true});
+  return rows;
+}
+function notamDetailHTML(n, icao, i){
+  const dec = notamDecode(n);
+  return `<div class="tfrdet">${dec.map(r=>`<div class="tfrrow"><span class="tfrk">${esc(r.k)}</span><span class="tfrv${r.pre?' ntmpre':''}" style="${r.col ? 'color:'+r.col : ''}">${r.pre ? esc(r.v) : esc(r.v)}</span></div>`).join('')}</div>`;
 }
 function notamRowHTML(icao){
   const list = (state.notams||{})[icao] || [];
@@ -7699,7 +7919,6 @@ async function loadMxak(){
   return ok;
 }
 /* Prefer BlueView over NDBC when it is current, since it is the same sensor sooner. */
-const MX_FOR_STATION = { PEC:'Pelican', TKE:'Tenakee', PAEL:'George Island', PAGS:'Gustavus Dock' };
 /* Match a BlueView station by name for the wind-only float destinations, whose entire
    picture is one wind reading and where an hour of lag matters most. */
 function mxByName(name){
