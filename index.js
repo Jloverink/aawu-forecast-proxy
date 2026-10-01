@@ -19,13 +19,13 @@ h1 .beacon{display:inline-block;width:12px;height:12px;border-radius:50%;backgro
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 @media (prefers-reduced-motion: reduce){h1 .beacon{animation:none}}
 .sub{color:var(--mut);font-size:13px;margin-top:2px}
-.topbar{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;justify-content:space-between;margin-bottom:16px}
+.topbar{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end;justify-content:space-between;margin-bottom:0;padding-bottom:14px;border-bottom:2px solid transparent;border-image:linear-gradient(90deg, var(--amber) 0%, rgba(242,169,59,.25) 60%, transparent 100%) 1;background:linear-gradient(180deg, rgba(242,169,59,.04) 0%, transparent 100%)}
 .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 button,select,input{font-family:var(--body);font-size:14px;background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer}
 button:hover{border-color:var(--amber)}
 button.primary{background:var(--amber);color:#20180a;font-weight:600;border-color:var(--amber)}
 button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--amber);outline-offset:1px}
-.tabs{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:6px;margin-top:12px;margin-bottom:16px;border-bottom:1px solid var(--line)}
 .tab{background:none;border:none;border-bottom:3px solid transparent;border-radius:0;color:var(--mut);font-family:var(--disp);font-size:18px;text-transform:uppercase;letter-spacing:.8px;padding:8px 14px}
 .tab.active{color:var(--ink);border-bottom-color:var(--amber)}
 .status{font-family:var(--mono);font-size:12px;color:var(--mut);margin:8px 0 14px;min-height:16px}
@@ -60,7 +60,8 @@ table{border-collapse:collapse;width:100%;font-size:13.5px}
 th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
 th{font-family:var(--disp);text-transform:uppercase;letter-spacing:.8px;font-size:13px;color:var(--mut);font-weight:600}
 td.mono{color:var(--ink)}
-#enroute tr{border-bottom:1px solid rgba(255,255,255,.06)}
+#enroute tr{border-bottom:1px solid rgba(255,255,255,.06);transition:background .15s ease}
+#enroute tr:hover{background:rgba(242,169,59,.04)}
 #enroute td{vertical-align:top;padding:8px 10px}
 #enroute td:first-child{white-space:nowrap}
 .detailcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 15px;margin-bottom:10px}
@@ -643,8 +644,8 @@ body.kiosk #camWrap{columns:560px 3}
 .hcell:hover{filter:brightness(1.5)}
 .hcell.hhr{background:none;height:13px;font-family:var(--mono);font-size:9.5px;color:var(--mut);overflow:visible;white-space:nowrap}
 .hlbl{font-family:var(--disp);font-size:14px;color:var(--ink);padding-right:8px;text-align:right}
-.mrow{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin-bottom:8px;cursor:pointer;border-left-width:4px}
-.mrow:hover{border-color:var(--amber)}
+.mrow{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 14px;margin-bottom:8px;cursor:pointer;border-left-width:4px;transition:background .15s ease, border-color .15s ease}
+.mrow:hover{border-color:var(--amber);background:rgba(242,169,59,.045)}
 .ml{font-family:var(--mono);font-size:13px;line-height:1.55;display:grid;grid-template-columns:50px 88px 42px 118px 1fr;gap:0 6px;align-items:baseline}
 /* 118px holds the usual source tag (5-MIN 14:40L 12m) on one line on its own. It used to
    also carry white-space:nowrap, but an EXPIRED tag is far longer and simply overflowed the
@@ -846,7 +847,8 @@ body.kiosk #camWrap{columns:560px 3}
   <div class="section">
     <h2>Enroute from Juneau</h2>
     <div class="note" style="margin:0 0 8px">Worst conditions along each corridor from current METAR, MADIS 5 minute obs, and TAF groups in the selected window. All departures start in central southeast.</div>
-    <div class="note" style="margin:0 0 8px;font-size:11px">VFR: cig above 3,000 ft and vis above 5 sm · MVFR: cig 1,000–3,000 ft and/or vis 3–5 sm · IFR: cig 500–999 ft and/or vis 1–3 sm · LIFR: below 500 ft / 1 sm</div>
+    <div class="note" style="margin:0 0 8px;font-size:11px">VFR: cig above 3,000 ft and vis above 5 sm · MVFR: cig 1,000-3,000 ft and/or vis 3-5 sm · IFR: cig 500-999 ft and/or vis 1-3 sm · LIFR: below 500 ft / 1 sm</div>
+    <div id="corrmap"></div>
     <div id="enroute"></div>
   </div>
 
@@ -5962,6 +5964,60 @@ function renderBoard(){
       + corrSection('TAF \u00b7 full decoded forecast', corrTafBlock(c.via, c))
       + corrSection('AREA FORECAST ZONES \u00b7 verbatim', corrZoneBlock(c.zones, c))};
   });
+  /* ---- corridor map: JNU hub with lines to each destination, color by worst cat ---- */
+  const corrMapEl = document.getElementById('corrmap');
+  if(corrMapEl){
+    const stnMap = {}; STATIONS.forEach(s=>{ stnMap[s.icao] = s; });
+    /* project lat/lon to SVG coords using simple Mercator within the SE AK box */
+    const latMin = 54.8, latMax = 60.0, lonMin = -140.5, lonMax = -130.5;
+    const svgW = 440, svgH = 340, pad = 36;
+    const proj = (lat, lon) => {
+      const x = pad + ((lon - lonMin) / (lonMax - lonMin)) * (svgW - 2*pad);
+      const y = pad + (1 - (lat - latMin) / (latMax - latMin)) * (svgH - 2*pad);
+      return [x, y];
+    };
+    const jnu = stnMap['PAJN'];
+    const [jx, jy] = proj(jnu.lat, jnu.lon);
+    const catColor = c => c==='VFR'?'var(--vfr)':c==='MVFR'?'var(--mvfr)':c==='IFR'?'var(--ifr)':c==='LIFR'?'var(--lifr)':'var(--na)';
+    /* only draw lines to distinct destinations, skip sub-corridors that share a dest with a longer route */
+    const drawn = new Set();
+    let lines = '', dots = '', labels = '';
+    corr.forEach(c=>{
+      const ds = stnMap[c.dest]; if(!ds || drawn.has(c.dest)) return; drawn.add(c.dest);
+      const [dx, dy] = proj(ds.lat, ds.lon);
+      const col = catColor(c.cat);
+      const nowCol = catColor(c.now.cat);
+      /* route line - use now color solid, with a dashed overlay if forecast is worse */
+      lines += `<line x1="${jx}" y1="${jy}" x2="${dx}" y2="${dy}" stroke="${nowCol}" stroke-width="2.5" stroke-opacity="0.7" stroke-linecap="round"/>`;
+      if(c.cat !== c.now.cat){
+        lines += `<line x1="${jx}" y1="${jy}" x2="${dx}" y2="${dy}" stroke="${col}" stroke-width="2.5" stroke-opacity="0.5" stroke-dasharray="6 4" stroke-linecap="round"/>`;
+      }
+      /* destination dot */
+      dots += `<circle cx="${dx}" cy="${dy}" r="4.5" fill="${nowCol}" stroke="#0e141b" stroke-width="1.5"/>`;
+      /* label with smart offset to avoid overlap with the line */
+      const ang = Math.atan2(dy - jy, dx - jx);
+      const lx = dx + Math.cos(ang) * 10;
+      const ly = dy + Math.sin(ang) * 10;
+      const anchor = dx < jx ? 'end' : 'start';
+      const voff = dy < jy ? -3 : 11;
+      labels += `<text x="${lx}" y="${ly + voff}" fill="var(--ink)" font-family="var(--disp)" font-size="11" font-weight="600" text-anchor="${anchor}" letter-spacing=".5">${ds.name}</text>`;
+    });
+    /* JNU hub dot */
+    const hub = `<circle cx="${jx}" cy="${jy}" r="7" fill="var(--amber)" stroke="#0e141b" stroke-width="2"/>
+      <text x="${jx}" y="${jy - 11}" fill="var(--amber)" font-family="var(--disp)" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="1">JNU</text>`;
+    /* legend */
+    const legend = ['VFR','MVFR','IFR','LIFR'].map((c2, i) =>
+      `<rect x="${svgW - 135}" y="${svgH - 56 + i*13}" width="10" height="10" rx="2" fill="${catColor(c2)}"/>
+       <text x="${svgW - 121}" y="${svgH - 47 + i*13}" fill="var(--mut)" font-family="var(--body)" font-size="10">${c2}</text>`
+    ).join('');
+    const dashNote = `<line x1="${svgW - 135}" y1="${svgH - 62}" x2="${svgW - 115}" y2="${svgH - 62}" stroke="var(--mut)" stroke-width="2" stroke-dasharray="4 3"/>
+      <text x="${svgW - 111}" y="${svgH - 58}" fill="var(--mut)" font-family="var(--body)" font-size="9">forecast change</text>`;
+
+    corrMapEl.innerHTML = `<svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%;max-width:${svgW}px;height:auto;display:block;margin:0 auto 12px">
+      ${lines}${dots}${hub}${labels}${legend}${dashNote}
+    </svg>`;
+  }
+
   document.getElementById('enroute').innerHTML = `<table>
     <tr><th>Corridor</th><th>Via / FA zones</th><th>Cat</th><th>Lowest ceiling</th><th>Lowest vis</th><th>Weather</th></tr>
     ${corr.map(c=>{
@@ -6983,7 +7039,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b262-topwarn';
+const BUILD_TAG = 'b263-polish';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
