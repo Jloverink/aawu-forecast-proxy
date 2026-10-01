@@ -60,6 +60,9 @@ table{border-collapse:collapse;width:100%;font-size:13.5px}
 th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
 th{font-family:var(--disp);text-transform:uppercase;letter-spacing:.8px;font-size:13px;color:var(--mut);font-weight:600}
 td.mono{color:var(--ink)}
+#enroute tr{border-bottom:1px solid rgba(255,255,255,.06)}
+#enroute td{vertical-align:top;padding:8px 10px}
+#enroute td:first-child{white-space:nowrap}
 .detailcard{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 15px;margin-bottom:10px}
 .detailcard h3{font-family:var(--disp);font-size:18px;font-weight:600;letter-spacing:.5px;display:flex;align-items:center;gap:8px}
 .detailcard h3 .dot{width:10px;height:10px;border-radius:50%}
@@ -327,11 +330,15 @@ body.tri .chipbreak{display:block;flex-basis:100%;height:0;margin:0}
 .ml.secfold{opacity:.72}
 .ml.secfold:hover{opacity:1}
 .ntmpre{white-space:pre-wrap;font-family:var(--mono);font-size:11.5px;line-height:1.5}
+@keyframes stpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.97)}}
+.stflash{animation:stpulse .8s ease-in-out 37;font-weight:800;box-shadow:0 0 6px currentColor}
+.stchip{font-size:11px;padding:1px 6px;line-height:1.35;font-weight:600}
+.mflags{display:inline-flex;flex-wrap:wrap;gap:2px 4px;align-items:baseline;margin-left:6px}
 .notamhead{color:var(--ifr);font-weight:800;font-family:var(--mono);font-size:11.5px;line-height:1.45;
   background:rgba(226,87,75,.14);border:1px solid var(--ifr);border-radius:5px;padding:4px 8px;margin:0 0 5px}
 .notamline{display:flex;gap:7px;align-items:baseline;font-family:var(--mono);font-size:11.5px;line-height:1.45;
   padding:2px 4px;border-radius:4px;cursor:pointer;margin:1px 0}
-.notamline:hover{background:rgba(255,255,255,.05)}
+.notamline:hover{background:rgba(255,255,255,.05);border-bottom:1px dotted #46596d}
 .notamtxt{min-width:0;flex:1}
 .notambadge{flex:none;background:var(--ifr);color:#0c1116;font-weight:800;font-size:9px;border-radius:3px;padding:0 4px}
 .alertgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:2px 10px}
@@ -778,6 +785,11 @@ body.kiosk #camWrap{columns:560px 3}
 
 <!-- ============ LIVE ============ -->
 <div id="pane-now">
+  <div class="section" id="nwsSection" style="margin-top:0;margin-bottom:6px">
+    <h2 style="margin-bottom:4px">NWS warnings and advisories
+      <span id="nwsNote" style="font-size:10.5px;color:var(--mut);font-weight:400;text-transform:none;letter-spacing:0"></span></h2>
+    <div id="nwsWrap"></div>
+  </div>
   <div id="suntrack" style="margin-bottom:10px"></div>
   <div id="sigmetBanner"></div>
   <div id="sensorBanner"></div>
@@ -805,11 +817,6 @@ body.kiosk #camWrap{columns:560px 3}
         <tbody id="grid-body"></tbody>
       </table>
     </div>
-  </div>
-  <div class="section">
-    <h2>NWS warnings and advisories
-      <span id="nwsNote" style="font-size:10.5px;color:var(--mut);font-weight:400;text-transform:none;letter-spacing:0"></span></h2>
-    <div id="nwsWrap"></div>
   </div>
   <div class="section">
     <h2>JAWS turbulence <button id="lampBtn" style="font-size:11px;padding:2px 10px">paste LAMP</button> <button id="jawsInfoBtn" style="font-size:11px;padding:2px 10px">what is JAWS</button> <button id="jawsPasteBtn" style="font-size:11px;padding:2px 10px">paste JAWS</button>
@@ -2606,10 +2613,45 @@ function nwsNotify(){
   if(state.nwsLastSig === sig) return;
   state.nwsLastSig = sig;
   state.alerts = state.alerts || [];
-  bad.forEach(a=>state.alerts.unshift({t:Date.now(), icao:(a.stations[0] || 'PAJN'),
-    name:'NWS ' + a.event, worse:true, better:false,
-    msg:`${a.severity} ${a.event}: ${a.area.slice(0,70)}`}));
+  bad.forEach(a=>{
+    state.alerts.unshift({t:Date.now(), icao:(a.stations[0] || 'PAJN'),
+      name:'NWS ' + a.event, worse:true, better:false,
+      msg:`${a.severity} ${a.event}: ${a.area.slice(0,70)}`});
+    /* Browser push for operationally critical events */
+    if(PUSH_EVENTS.test(a.event) || PUSH_ALWAYS.test(a.event) || (NWS_SEV[a.severity]||0) >= 4){
+      pushNotify(
+        '\u26a0\ufe0f NWS: ' + a.event,
+        a.area.slice(0,120) + (a.headline ? '\n' + a.headline.slice(0,120) : ''),
+        'nws-' + (a.id || a.event)
+      );
+    }
+  });
   flashTitle();
+  /* Push for hangar-required conditions from forecast */
+  try{
+    const ovn = overnightLow();
+    if(ovn && ovn.call && ovn.call.hangar){
+      pushNotify('\u2744\ufe0f Hangar aircraft tonight',
+        'Forecast low ' + ovn.tempF + '\u00b0F ' + ovn.sky + ' at ' + fmtLZ(ovn.t) + '. ' + ovn.call.reason,
+        'hangar-' + new Date().toDateString());
+    }
+  }catch(e){}
+  /* Also push frost/freeze advisories at Moderate severity since those are
+     the ones that bit us: they do not reach Severe but still frost the fleet */
+  list.filter(a=>(NWS_SEV[a.severity]||0) >= 2 && PUSH_EVENTS.test(a.event))
+    .forEach(a=>{
+      pushNotify(
+        '\u2744\ufe0f ' + a.event,
+        a.area.slice(0,120) + (a.headline ? '\n' + a.headline.slice(0,120) : ''),
+        'nws-' + (a.id || a.event)
+      );
+      /* Also add to the board alerts if not already there */
+      if(!state.alerts.some(x=>x.msg && x.msg.includes(a.event))){
+        state.alerts.unshift({t:Date.now(), icao:(a.stations[0]||'PAJN'),
+          name:'NWS ' + a.event, worse:true, better:false,
+          msg:`${a.severity} ${a.event}: ${a.area.slice(0,70)}`});
+      }
+    });
 }
 async function loadNws(){
   try{
@@ -4367,7 +4409,10 @@ function detectChanges(){
         state.alerts.unshift({t:Date.now(), icao:st.icao, name:st.name, msg:netMsgs.join(', '), worse, better});
         if(worse && alertsAllowed(st.icao)) flashTitle();
         if((CAT_ORDER[b.cat]??0) > (CAT_ORDER[a.cat]??0)){
-          if(b.cat==='IFR' || b.cat==='LIFR') playTone('cat');
+          if(b.cat==='IFR' || b.cat==='LIFR'){
+            playTone('cat');
+            pushNotify('\u26a0\ufe0f ' + st.name + ' now ' + b.cat, msgs.join(', '), 'cat-'+st.icao+'-'+Date.now());
+          }
           else if(b.cat==='MVFR') playTone('mvfr');
         }
       }
@@ -4392,6 +4437,7 @@ function detectChanges(){
         state.alerts.unshift({t:Date.now(), icao:st.icao, name:st.name, worse:true, msg, short:shortTxt});
         flashTitle();
         playTone(b.wind==='over' ? 'over' : 'mgmt');
+        if(b.wind==='over') pushNotify('\ud83d\udca8 Wind limit: ' + st.name, shortTxt, 'wind-'+st.icao+'-'+Date.now());
       }
     });
     // external cutoff stations crossing their limits
@@ -5214,15 +5260,316 @@ function faRegionToggle(){
   if(b) b.textContent = state.faStatewide ? 'Southeast only' : 'show statewide';
   if(window.lastPer) renderBoard();
 }
+/* ================= BROWSER PUSH NOTIFICATIONS =================
+   Fires desktop/phone notifications for operationally critical events even when the
+   tab is in the background. Covers: NWS frost/freeze/wind warnings, wind limit
+   exceedances, airport closures, and IFR/LIFR transitions at TAF stations.
+   The board already detects all of these; this just makes them impossible to miss. */
+const PUSH_EVENTS = /frost|freeze|freez|blizzard|ice storm|wind chill|high wind|winter storm|gale|hurricane/i;
+const PUSH_ALWAYS = /closure|closed|CLSD/i;
+let pushGranted = false;
+function initPush(){
+  if(!('Notification' in window)) return;
+  if(Notification.permission === 'granted'){ pushGranted = true; return; }
+  if(Notification.permission === 'denied') return;
+  /* Ask once, quietly, after 10 seconds so it does not block the first load */
+  setTimeout(()=>{
+    try{
+      Notification.requestPermission().then(p=>{ pushGranted = p === 'granted'; });
+    }catch(e){
+      /* Safari older syntax */
+      Notification.requestPermission(p=>{ pushGranted = p === 'granted'; });
+    }
+  }, 10000);
+}
+initPush();
+let pushSentIds = new Set();
+function pushNotify(title, body, tag){
+  if(!pushGranted) return;
+  if(tag && pushSentIds.has(tag)) return;
+  /* Only push during work hours 6am-6pm Alaska time */
+  try{
+    const hr = parseInt(new Intl.DateTimeFormat('en-US',{timeZone:'America/Juneau',hour:'numeric',hour12:false}).format(new Date()));
+    if(hr < 6 || hr >= 18) return;
+  }catch(e){}
+  if(tag) pushSentIds.add(tag);
+  try{
+    const n = new Notification(title, {
+      body, tag: tag || undefined, icon: '\ud83c\udf29\ufe0f',
+      requireInteraction: true,   /* stay until dismissed */
+    });
+    n.onclick = ()=>{ window.focus(); n.close(); };
+  }catch(e){}
+
+}
+/* ================= HANGAR DECISION ENGINE =================
+   Rules from ops:
+   - Temp <= 38F AND clear/few clouds  -> HANGAR (radiation frost risk)
+   - Temp <= 36F AND cloudy            -> HANGAR (cold enough even with cloud cover)
+   - Temp 37-38F AND cloudy            -> OK but marginal
+   - Hangar door wind: caution > 30 mph (26 kt), doors stay closed > 40 mph (35 kt)
+   Uses current METAR/MADIS plus the NWS hourly forecast for overnight lows. */
+
+const HANGAR_RULES = {
+  clearThreshF: 38,   // hangar at or below this temp when sky is clear/few
+  cloudyThreshF: 36,  // hangar at or below this temp when sky is SCT/BKN/OVC
+  doorCautionKt: 26,  // ~30 mph
+  doorClosedKt: 35,   // ~40 mph
+};
+function isClearSky(clouds){
+  if(!clouds || !clouds.length) return true;  // no clouds = clear
+  return clouds.every(c => c.cover === 'CLR' || c.cover === 'SKC' || c.cover === 'FEW' || c.cover === 'NSC');
+}
+function hangarCall(tempF, clouds){
+  if(tempF === null || tempF === undefined) return null;
+  const clear = isClearSky(clouds);
+  const thresh = clear ? HANGAR_RULES.clearThreshF : HANGAR_RULES.cloudyThreshF;
+  if(tempF <= thresh) return {hangar:true, reason: clear
+    ? `${tempF.toFixed(0)}\u00b0F with clear skies (threshold ${thresh}\u00b0F) = radiation frost risk`
+    : `${tempF.toFixed(0)}\u00b0F with cloud cover (threshold ${thresh}\u00b0F)`};
+  if(clear && tempF <= HANGAR_RULES.clearThreshF + 3)
+    return {hangar:false, marginal:true, reason: `${tempF.toFixed(0)}\u00b0F clear, close to ${HANGAR_RULES.clearThreshF}\u00b0F hangar threshold`};
+  if(!clear && tempF <= HANGAR_RULES.cloudyThreshF + 2)
+    return {hangar:false, marginal:true, reason: `${tempF.toFixed(0)}\u00b0F cloudy, close to ${HANGAR_RULES.cloudyThreshF}\u00b0F hangar threshold`};
+  return {hangar:false, reason: `${tempF.toFixed(0)}\u00b0F, above hangar thresholds`};
+}
+function hangarDoorStatus(wkt){
+  if(wkt === null || wkt === undefined) return null;
+  const mph = Math.round(wkt * 1.151);
+  if(wkt >= HANGAR_RULES.doorClosedKt) return {status:'closed', label:`DOORS CLOSED: ${wkt} kt / ${mph} mph (limit ${HANGAR_RULES.doorClosedKt} kt / 40 mph)`, col:'var(--ifr)'};
+  if(wkt >= HANGAR_RULES.doorCautionKt) return {status:'caution', label:`DOOR CAUTION: ${wkt} kt / ${mph} mph (caution above ${HANGAR_RULES.doorCautionKt} kt / 30 mph)`, col:'var(--amber)'};
+  return {status:'ok', label:`Doors OK: ${wkt} kt / ${mph} mph`, col:'var(--mvfr)'};
+}
+
+/* NWS hourly forecast for Juneau - gives temps for the next 48h so we can
+   find the overnight low and make the hangar call before crews leave. */
+const NWS_PAJN_HOURLY = 'https://api.weather.gov/gridpoints/AJK/178,72/forecast/hourly';
+async function loadHourlyTemp(){
+  try{
+    const r = await fetch(NWS_PAJN_HOURLY, {headers:{accept:'application/geo+json'}});
+    if(!r.ok) return;
+    const j = await r.json();
+    const periods = (j.properties && j.properties.periods) || [];
+    state.nwsHourly = periods.slice(0, 36).map(p=>({
+      t: new Date(p.startTime).getTime(),
+      tempF: p.temperature,
+      wind: p.windSpeed ? parseInt(p.windSpeed) : null,
+      windDir: p.windDirection || null,
+      sky: p.shortForecast || '',
+      icon: p.icon || '',
+    }));
+    state.nwsHourlyAt = Date.now();
+  }catch(e){ /* hourly forecast is best-effort */ }
+}
+function overnightLow(){
+  if(!state.nwsHourly || !state.nwsHourly.length) return null;
+  const now = Date.now();
+  /* "overnight" = next 18 hours, or from 6pm to 9am if we can identify that window */
+  const tz = 'America/Juneau';
+  let startH, endH;
+  try{
+    const hr = parseInt(new Intl.DateTimeFormat('en-US',{timeZone:tz,hour:'numeric',hour12:false}).format(new Date()));
+    if(hr >= 14){ startH = now; endH = now + 18*3600000; }  // afternoon: look through tomorrow morning
+    else { startH = now; endH = now + 12*3600000; }          // morning: look through tonight
+  }catch(e){ startH = now; endH = now + 18*3600000; }
+  const window = state.nwsHourly.filter(p => p.t >= startH && p.t <= endH && p.tempF !== null);
+  if(!window.length) return null;
+  const lowest = window.reduce((a, b) => b.tempF < a.tempF ? b : a, window[0]);
+  /* Determine if the low period will be clear or cloudy */
+  const nearLow = window.filter(p => Math.abs(p.t - lowest.t) <= 3*3600000);
+  const clearCount = nearLow.filter(p => /clear|sunny|few/i.test(p.sky) || !/cloud|overcast|fog|rain|snow/i.test(p.sky)).length;
+  const isClear = clearCount > nearLow.length / 2;
+  return {tempF: lowest.tempF, t: lowest.t, clear: isClear, sky: lowest.sky,
+    call: hangarCall(lowest.tempF, isClear ? [{cover:'CLR'}] : [{cover:'OVC', base:3000}])};
+}
+
+/* Hangar chip for the hazard bar - shown Oct through Apr when temps are relevant */
+function hangarChipHTML(){
+  const m = state.metars && state.metars.PAJN;
+  const bits = [];
+  /* Current conditions at Juneau */
+  if(m && m.temp !== null && m.temp !== undefined){
+    const tempF = m.temp * 9/5 + 32;
+    const now = hangarCall(tempF, m.clouds);
+    if(now && now.hangar) bits.push(`<b style="color:var(--ifr)">NOW: HANGAR</b> ${esc(now.reason)}`);
+    else if(now && now.marginal) bits.push(`<b style="color:var(--amber)">NOW: marginal</b> ${esc(now.reason)}`);
+  }
+  /* Overnight forecast */
+  const ovn = overnightLow();
+  if(ovn){
+    const lbl = ovn.call && ovn.call.hangar
+      ? `<b style="color:var(--ifr)">TONIGHT: HANGAR</b>`
+      : (ovn.call && ovn.call.marginal ? `<b style="color:var(--amber)">TONIGHT: marginal</b>` : `<b>TONIGHT: OK</b>`);
+    bits.push(`${lbl} forecast low ${ovn.tempF}\u00b0F ${esc(ovn.sky)} at ${fmtLZ(ovn.t)}`);
+  }
+  /* Hangar door wind */
+  const wind = windForLimits && typeof windForLimits === 'function'
+    ? windForLimits('PAJN', ((window.lastPer||{}).PAJN||{}).obs)
+    : null;
+  if(wind){
+    const spd = Math.max(wind.wspd||0, wind.wgst||0);
+    const door = hangarDoorStatus(spd);
+    if(door && door.status !== 'ok') bits.push(`<span style="color:${door.col}">${esc(door.label)}</span>`);
+  }
+  if(!bits.length) return '';
+  const worst = bits.some(b=>/HANGAR</.test(b)) ? 'imp' : '';
+  const tipKey = 'haz-hangar';
+  return `<span class="chip ${worst}" data-tip="${tipKey}" style="${/HANGAR</.test(bits[0])?'border-color:var(--ifr)':''}">`
+    + (bits.some(b=>/HANGAR</.test(b)) ? '\u2744\ufe0f Hangar aircraft' : '\u2744\ufe0f Hangar watch')
+    + `</span>`;
+}
+
+/* Persistent ceiling/visibility change tracker. Stores the last known values
+   and the time they changed, survives refresh. Always shows on the station row. */
+function trackChanges(icao, cig, vis, wx){
+  let store = {};
+  try{ store = JSON.parse(localStorage.getItem('wxb_changes') || '{}'); }catch(e){}
+  const rec = store[icao] || {};
+  let dirty = false;
+  const now = Date.now();
+  /* b259: clear stale data from the *100 bug */
+  if(rec.lastCig && rec.lastCig > 30000){ delete rec.lastCig; delete rec.cigFrom; delete rec.cigTo; delete rec.cigAt; delete rec.cigSeen; dirty = true; }
+  if(cig !== null && cig !== undefined && rec.lastCig !== cig){
+    if(rec.lastCig !== undefined){ rec.cigFrom = rec.lastCig; rec.cigTo = cig; rec.cigAt = now; dirty = true; }
+    rec.lastCig = cig; rec.cigSeen = now;
+  } else if(cig !== null && !rec.cigSeen){ rec.lastCig = cig; rec.cigSeen = now; dirty = true; }
+  if(vis !== null && vis !== undefined){
+    const vn = typeof vis === 'number' ? vis : parseVis(vis);
+    if(rec.lastVis !== vn){
+      if(rec.lastVis !== undefined){ rec.visFrom = rec.lastVis; rec.visTo = vn; rec.visAt = now; dirty = true; }
+      rec.lastVis = vn; rec.visSeen = now;
+    } else if(!rec.visSeen){ rec.lastVis = vn; rec.visSeen = now; dirty = true; }
+  }
+  /* Weather type tracking: note when significant wx starts or stops */
+  if(wx && Array.isArray(wx)){
+    const sig = wx.filter(t=>!/\b(BR|HZ|FU)\b/.test(t)).sort().join(',');
+    if(rec.lastWx !== sig){
+      if(rec.lastWx !== undefined){
+        const oldSet = new Set((rec.lastWx||'').split(',').filter(Boolean));
+        const newSet = new Set(sig.split(',').filter(Boolean));
+        const started = [...newSet].filter(t=>!oldSet.has(t));
+        const stopped = [...oldSet].filter(t=>!newSet.has(t));
+        if(started.length || stopped.length){
+          rec.wxFrom = rec.lastWx; rec.wxTo = sig; rec.wxAt = now;
+          rec.wxStarted = started; rec.wxStopped = stopped;
+          dirty = true;
+        }
+      }
+      rec.lastWx = sig;
+    }
+  }
+  store[icao] = rec;
+  if(dirty){
+    try{ localStorage.setItem('wxb_changes', JSON.stringify(store)); }catch(e){}
+    try{ playTone('chg'); }catch(e){}
+  }
+  return rec;
+}
+function statusChips(icao){
+  const m = state.metars[icao];
+  const md = state.madis[icao];
+  if(!m && !md) return '';
+  const bits = [];
+  const MAX_AGE = 8 * 3600000;
+  const FLASH_SEC = 30;
+  let store = {};
+  try{ store = JSON.parse(localStorage.getItem('wxb_changes') || '{}'); }catch(e){}
+  const rec = store[icao] || {};
+  const obsTime = m ? (m.obsTime || m.reportTime) : (md ? md.valid : null);
+  const obsTxt = obsTime ? fmtLZ(obsTime) : '';
+  const minsAgo = t => { const m2 = Math.round((Date.now() - t) / 60000); return m2 < 1 ? 'just now' : m2 + 'm ago'; };
+  /* Ceiling */
+  const curCig = (function(){
+    if(m && m.clouds){
+      const bkn = m.clouds.filter(c=>c.cover==='BKN'||c.cover==='OVC').map(c=>c.base).sort((a,b)=>a-b);
+      if(bkn.length) return bkn[0];
+    }
+    return null;
+  })();
+  {
+    const cig = curCig;
+    const cigTxt = cig === null ? 'clr' : (cig >= 10000 ? (cig/1000).toFixed(0)+'k' : cig.toLocaleString()+'ft');
+    let label, col, cls = 'stchip', title;
+    if(rec.cigAt && Date.now() - rec.cigAt < MAX_AGE && rec.cigFrom !== undefined){
+      const from = rec.cigFrom === null ? 'clr' : (rec.cigFrom >= 10000 ? (rec.cigFrom/1000).toFixed(0)+'k' : rec.cigFrom.toLocaleString()+'ft');
+      const worse = cig !== null && rec.cigFrom !== null && cig < rec.cigFrom;
+      col = worse ? '#ff4444' : '#44ddaa';
+      const ago = minsAgo(rec.cigAt);
+      label = `${worse?'\u25bc':'\u25b2'} cig ${from}\u2192${cigTxt} ${fmtLZ(rec.cigAt)} ${ago}`;
+      title = `Ceiling went from ${rec.cigFrom === null ? 'clear' : rec.cigFrom.toLocaleString()+' ft'} to ${cig === null ? 'clear' : cig.toLocaleString()+' ft'} at ${fmtLZ(rec.cigAt)} (${ago})`;
+      if((Date.now() - rec.cigAt) / 1000 < FLASH_SEC) cls += ' stflash';
+    } else {
+      col = '#8ab4d6';
+      label = `cig ${cigTxt} ${obsTxt}`;
+      title = `Current ceiling: ${cig === null ? 'clear' : cig.toLocaleString()+' ft'} as of ${obsTxt}`;
+    }
+    bits.push(`<span class="cutchip ${cls}" style="color:${col};border-color:${col}" title="${esc(title)}">${label}</span>`);
+  }
+  /* Visibility */
+  {
+    const vis = m ? parseVis(m.visib) : (md ? md.vis : null);
+    if(vis !== null && vis !== undefined){
+      const visTxtV = visTxt(vis)+'sm';
+      let label, col, cls = 'stchip', title;
+      if(rec.visAt && Date.now() - rec.visAt < MAX_AGE && rec.visFrom !== undefined){
+        const from = visTxt(rec.visFrom)+'sm';
+        const worse = rec.visFrom !== null && vis < rec.visFrom;
+        col = worse ? '#ff4444' : '#44ddaa';
+        const ago = minsAgo(rec.visAt);
+        label = `${worse?'\u25bc':'\u25b2'} vis ${from}\u2192${visTxtV} ${fmtLZ(rec.visAt)} ${ago}`;
+        title = `Visibility went from ${visTxt(rec.visFrom)} sm to ${visTxt(vis)} sm at ${fmtLZ(rec.visAt)} (${ago})`;
+        if((Date.now() - rec.visAt) / 1000 < FLASH_SEC) cls += ' stflash';
+      } else {
+        col = '#8ab4d6';
+        label = `vis ${visTxtV} ${obsTxt}`;
+        title = `Current visibility: ${visTxt(vis)} sm as of ${obsTxt}`;
+      }
+      bits.push(`<span class="cutchip ${cls}" style="color:${col};border-color:${col}" title="${esc(title)}">${label}</span>`);
+    }
+  }
+  /* Weather type changes */
+  if(rec.wxAt && Date.now() - rec.wxAt < MAX_AGE){
+    const ago = minsAgo(rec.wxAt);
+    const flash = (Date.now() - rec.wxAt) / 1000 < FLASH_SEC ? ' stflash' : '';
+    if(rec.wxStarted && rec.wxStarted.length){
+      const wx = rec.wxStarted.map(wxWord).join(', ');
+      bits.push(`<span class="cutchip stchip${flash}" style="color:#ff6644;border-color:#ff6644" title="${esc(wx+' started '+ago)}">\u26a0 + ${wx} ${fmtLZ(rec.wxAt)} ${ago}</span>`);
+    }
+    if(rec.wxStopped && rec.wxStopped.length){
+      const wx = rec.wxStopped.map(wxWord).join(', ');
+      bits.push(`<span class="cutchip stchip${flash}" style="color:#44ddaa;border-color:#44ddaa" title="${esc(wx+' ended '+ago)}">\u2713 ${wx} ended ${fmtLZ(rec.wxAt)} ${ago}</span>`);
+    }
+  }
+  return bits.join('');
+}
 function renderBoard(){
   const winHrs = parseInt(document.getElementById('win').value,10);
   const evalT0 = Date.now(), evalT1 = evalT0 + Math.max(winHrs, 0.02)*3600000;
   const per = {};
   STATIONS.forEach(s=> per[s.icao] = stationWorst(s.icao, winHrs));
   window.lastPer = per;
+  /* Track ceiling/visibility changes persistently */
+  STATIONS.forEach(s2=>{
+    const m2 = state.metars[s2.icao];
+    if(m2){
+      const cig2 = m2.clouds ? m2.clouds.filter(c=>c.cover==='BKN'||c.cover==='OVC').map(c=>c.base).sort((a,b)=>a-b)[0] || null : null;
+      const vis2 = m2.visib !== null && m2.visib !== undefined ? parseVis(m2.visib) : null;
+      const wx2 = m2.wxString ? wxTokens(m2.wxString) : [];
+      trackChanges(s2.icao, cig2, vis2, wx2);
+    }
+  });
   for(const k in TIPS) delete TIPS[k];
+
   /* Recent-observation history behind the METAR and MADIS labels. METARs come from
      the 12 h AWC fetch already held in metarHist; MADIS rows from the IEM history. */
+  /* Per-NOTAM decode tips for hover */
+  STATIONS.forEach(s2=>{
+    const ntms = (state.notams||{})[s2.icao] || [];
+    ntms.forEach((n, i)=>{
+      const k = notamKey(s2.icao, i);
+      TIPS['ntm-'+k] = {html: notamDetailHTML(n, s2.icao, i)};
+    });
+  });
   STATIONS.forEach(s2=>{
     const mh = (state.metarHist[s2.icao]||[]).slice(0,5);
     if(mh.length) TIPS['obm-'+s2.icao] = 'LAST ' + mh.length + ' METARS \u00b7 ' + s2.name.toUpperCase() + ' ' + s2.icao + '\n\n'
@@ -5389,6 +5736,7 @@ function renderBoard(){
     const lo=Math.min(...f), hiF=Math.max(...f);
     return lo===hiF ? lo.toLocaleString()+' ft' : lo.toLocaleString()+' to '+hiF.toLocaleString()+' ft';
   }) + '\n\nSOURCE LINES\n' + faZ.map(z=>z.id+': '+(z.ice.join(' ')||'n/a')).join('\n');
+  const chips = [];
   (function(){
     const iceZl = faZ.map(z=>({z, layers: parseIceLayers(z.ice.join(' '))}));
     const iceLine = L => (L.qual ? L.qual + ' ' : '') + L.sev + (L.type ? ' ' + L.type : '')
@@ -5445,7 +5793,33 @@ function renderBoard(){
     const m = raw.match(/WS\d{3}\/\d{5,6}KT/);
     return st.name+': '+(m?m[0]:'WS group in TAF');
   }).join('\n');
-  const chips = [];
+
+  /* Hangar decision chip */
+  const hChip = hangarChipHTML();
+  if(hChip){
+    const m2 = state.metars && state.metars.PAJN;
+    const tempF = m2 && m2.temp !== null ? m2.temp * 9/5 + 32 : null;
+    const nowCall = tempF !== null ? hangarCall(tempF, m2.clouds) : null;
+    const ovn = overnightLow();
+    const wind = windForLimits ? windForLimits('PAJN', ((window.lastPer||{}).PAJN||{}).obs) : null;
+    const spd = wind ? Math.max(wind.wspd||0, wind.wgst||0) : 0;
+    const door = hangarDoorStatus(spd);
+    let tip = 'HANGAR DECISION (Juneau ramp)\n\n';
+    tip += 'RULES:\n';
+    tip += '  Clear/few + temp \u2264 38\u00b0F = HANGAR (radiation frost)\n';
+    tip += '  Cloudy + temp \u2264 36\u00b0F = HANGAR\n';
+    tip += '  Cloudy + 37-38\u00b0F = OK (clouds insulate)\n\n';
+    if(nowCall) tip += 'NOW: ' + (nowCall.hangar ? 'HANGAR' : nowCall.marginal ? 'MARGINAL' : 'OK') + ' - ' + nowCall.reason + '\n';
+    if(ovn) tip += 'OVERNIGHT: ' + (ovn.call && ovn.call.hangar ? 'HANGAR' : ovn.call && ovn.call.marginal ? 'MARGINAL' : 'OK')
+      + ' - forecast low ' + ovn.tempF + '\u00b0F ' + ovn.sky + ' at ' + fmtLZ(ovn.t) + '\n';
+    tip += '\nHANGAR DOOR WIND LIMITS:\n';
+    tip += '  Caution above 26 kt / 30 mph\n';
+    tip += '  Doors stay closed above 35 kt / 40 mph\n';
+    if(door) tip += '  NOW: ' + door.label + '\n';
+    if(wind) tip += '  Wind source: ' + (wind.src||'') + ' at ' + fmtLZ(wind.t) + '\n';
+    TIPS['haz-hangar'] = tip;
+    chips.push(hChip);
+  }
   EXT.forEach(e=>{
     const stt = extStatus(e, state.ext[e.id]);
     if(stt.cls === 'over') chips.push(e.info
@@ -5500,19 +5874,7 @@ function renderBoard(){
     const hi = layers.filter(L=>L.low === false);
     return hi.length ? zName(z.id) + ': ' + hi.map(line).join(', ') : null;
   }).filter(Boolean);
-  {
-    const zl = faZ.map(z=>({z, layers: parseIceLayers(z.ice.join(' ')).filter(L=>L.low !== false)})).filter(x=>x.layers.length);
-    if(zl.length){
-      const all = zl.flatMap(x=>x.layers);
-      const worst = all.reduce((a,b)=>b.rank > a.rank ? b : a, all[0]);
-      const bases = all.map(L=>L.base).filter(n=>n!==null), tops = all.map(L=>L.top).filter(n=>n!==null);
-      const band = bases.length ? fmtLvlFt(Math.min(...bases)) + '\u2013' + (tops.length ? fmtLvlFt(Math.max(...tops)) : '?') : 'levels not stated';
-      const names = zl.map(x=>zName(x.z.id));
-      const zTxt = names.slice(0,4).join(', ') + (names.length > 4 ? ` +${names.length-4} more` : '');
-      const sevCol = worst.rank >= 3 ? 'var(--ifr)' : worst.rank === 2 ? 'var(--amber)' : 'var(--ink)';
-      chips.push(`<span class="chip${worst.rank >= 2 ? ' imp' : ''}" data-tip="haz-ice"${worst.rank >= 3 ? ' style="border-color:var(--ifr)"' : ''}>Icing \u2264FL150: <b style="color:${sevCol}">${worst.qual ? worst.qual + ' ' : ''}${worst.sev} ${band}</b> (${zTxt})</span>`);
-    }
-  }
+
   const fogRisk = STATIONS.filter(st=>{
     const o2 = per[st.icao].obs;
     return o2 && o2.temp!==null && o2.temp!==undefined && o2.dewp!==null && o2.dewp!==undefined && (o2.temp - o2.dewp) < 1;
@@ -5624,10 +5986,39 @@ function renderBoard(){
       })()}</td>
       <td>${fmtCig(c.now.cig)}${(c.cig!==null && (c.now.cig===null || c.cig < c.now.cig))?`<br><span style="color:var(--amber);font-size:11px;font-weight:700">\u2192 ${fmtCig(c.cig)}${c.cigFrom&&c.cigFrom.starts?' starting '+fmtLZ(c.cigFrom.starts):(c.cigFrom&&c.cigFrom.src==='TAF'?tafSrcNote(c.cigFrom.icao):' later')}</span>`:''}</td>
       <td>${c.now.vis===null?'?':visTxt(c.now.visRaw ?? c.now.vis)+' sm'}${(c.vis!==null && (c.now.vis===null || c.vis < c.now.vis))?`<br><span style="color:var(--amber);font-size:11px;font-weight:700">\u2192 ${visTxt(c.visRaw ?? c.vis)} sm${c.visFrom&&c.visFrom.starts?' starting '+fmtLZ(c.visFrom.starts):(c.visFrom&&c.visFrom.src==='TAF'?tafSrcNote(c.visFrom.icao):' later')}</span>`:''}</td>
-      <td style="color:var(--mut)">${corrWxHTML(c, {small:true})}${corrIceHTML(c, {small:true})}${(function(){
+      <td style="max-width:320px">${(function(){
+        const rows = [];
+        /* row 1: current observed weather */
+        const observed = wxSummary([...c.now.wx]);
+        if(observed) rows.push(`<div style="color:var(--fg)">now: ${observed}</div>`);
+        else rows.push(`<div style="color:var(--mut);font-style:italic">nothing observed</div>`);
+        /* row 2: forecast active now (not observed) */
+        const nowMs2 = Date.now();
+        const added2 = [...c.wx].filter(t=>!c.now.wx.has(t));
+        const fcstNow2 = [], timed2 = {}, untimed2 = [];
+        added2.forEach(tok=>{
+          const st3 = corrWxStart(c, tok, nowMs2);
+          if(st3 && st3.now) fcstNow2.push(wxWord(tok));
+          else if(st3 && st3.at) (timed2[st3.at] = timed2[st3.at] || []).push(wxWord(tok));
+          else untimed2.push(wxWord(tok));
+        });
+        if(fcstNow2.length) rows.push(`<div style="color:var(--amber);font-size:11px">forecast in effect: ${fcstNow2.join(', ')}</div>`);
+        /* row 3: upcoming weather with start times */
+        Object.keys(timed2).map(Number).sort((a,b2)=>a-b2).forEach(at=>{
+          rows.push(`<div style="color:var(--amber);font-size:11px;font-weight:600">→ + ${timed2[at].join(', ')} <span style="font-weight:400;color:var(--mut)">from ${fmtLZ(at)}</span></div>`);
+        });
+        if(untimed2.length) rows.push(`<div style="color:var(--amber);font-size:11px">→ later: ${untimed2.join(', ')}</div>`);
+        /* row 4: icing in cruise band */
+        const iceStr = corrIceHTML(c, {small:true});
+        if(iceStr) rows.push(`<div style="margin-top:2px">${iceStr.replace(/^<br>/,'')}</div>`);
+        /* row 5: T/Td spread and LLWS flags */
         const f2 = c.via.filter(ic=>{ const w3=(window.lastPer||{})[ic]; const o3=w3&&w3.obs; return o3&&o3.temp!==null&&o3.temp!==undefined&&o3.dewp!==null&&o3.dewp!==undefined&&(o3.temp-o3.dewp)<1; });
-        return f2.length?' <span class="flag">T/Td&lt;1 '+f2.map(ic=>(STATIONS.find(x=>x.icao===ic)||{}).name||ic).join(', ')+'</span>':'';
-      })()}${c.llws?' <span class="flag">LLWS</span>':''}</td>
+        const flags = [];
+        if(f2.length) flags.push(`<span class="flag">T/Td&lt;1 ${f2.map(ic=>(STATIONS.find(x=>x.icao===ic)||{}).name||ic).join(', ')}</span>`);
+        if(c.llws) flags.push(`<span class="flag">LLWS</span>`);
+        if(flags.length) rows.push(`<div style="margin-top:2px">${flags.join(' ')}</div>`);
+        return rows.join('');
+      })()}</td>
     </tr>`;}).join('')}
   </table>`;
 
@@ -5940,6 +6331,7 @@ async function loadNow(){
     const asos1Text = results[results.length - 1];   // appended last, so nothing renumbers
     if(!state.notams) state.notams = {};
     loadNotams();
+    try{ loadHourlyTemp(); }catch(e){ console.warn('loadHourlyTemp deferred:', e.message); setTimeout(()=>{ try{ loadHourlyTemp(); }catch(e2){} }, 5000); }
     if(tfrJson !== null){
       const arr = Array.isArray(tfrJson) ? tfrJson : (tfrJson && tfrJson.tfrList) || [];
       state.tfrs = arr.filter(t=>String(t.state||t.facility||'').toUpperCase().includes('AK') || String(t.facility||'').toUpperCase().includes('ZAN'));
@@ -6591,7 +6983,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b248-notamdecode';
+const BUILD_TAG = 'b262-topwarn';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -7487,7 +7879,7 @@ function notamRowHTML(icao){
     const win = notamWindow(n.raw);
     const stale = win && win.active === false;
     const txt = open ? '' : (n.raw.length > 190 ? n.raw.slice(0,190) + '\u2026' : n.raw);
-    return `<div class="notamline" data-notam="${k}" style="color:${col};font-weight:${weight};${stale?'opacity:.55':''}">`
+    return `<div class="notamline" data-notam="${k}" data-hovertip="ntm-${k}" style="color:${col};font-weight:${weight};cursor:help;${stale?'opacity:.55':''}">`
       + (n.cat === 'closure' ? '<span class="notambadge">CLSD</span>' : '')
       + `<span class="notamtxt">${esc(txt)}</span><span class="tfrexp">${open?'\u25b2 less':'\u25bc full'}</span></div>`
       + (open ? notamDetailHTML(n, icao, i) : '');
@@ -7703,6 +8095,33 @@ function closureChip(icao){
   const rwy = (first.match(/\b(?:RWY|RUNWAY)\s*([0-9]{2}[LRC]?(?:\/[0-9]{2}[LRC]?)?)/i) || [])[1];
   const label = rwy ? `RWY ${rwy} CLSD` : 'FIELD CLSD';
   return `<span class="cutchip closurechip" title="${esc(tip)}">${esc(label)}${active.length ? '' : ' (not active now)'}</span>`;
+}
+/* Flag when METAR visibility and VEIA camera estimate disagree significantly.
+   The METAR sensor can frost over, get a spider web, or collect dew while the
+   actual flight visibility is 10 miles. The cameras catch this. */
+function veiaDisagreeChip(icao){
+  const veia = (state.cam || {})[icao];
+  if(!veia || !veia.vis || veia.vis.confidence < 0) return '';
+  const m = state.metars[icao];
+  if(!m || m.visib === null || m.visib === undefined) return '';
+  const metarVis = parseVis(m.visib);
+  const veiaVis = veia.vis.visibilityStatuteMi;
+  if(veiaVis === null || veiaVis === undefined) return '';
+  /* Flag when METAR says below 3 sm but VEIA says above 5 sm */
+  if(metarVis < 3 && veiaVis >= 5){
+    const tip = `METAR sensor reports ${visTxt(m.visib)} sm but the camera-based VEIA estimate is ${veiaVis} sm. `
+      + 'This often means the ASOS visibility sensor is contaminated (frost, dew, spider web, condensation) '
+      + 'while actual flight visibility is much better. Verify with the camera images or pilot report before '
+      + 'making a dispatch decision based on the METAR alone. VEIA is advisory and non-certified.';
+    return `<span class="cutchip" style="border-color:var(--amber);color:var(--amber)" title="${esc(tip)}">\u26a0 METAR ${visTxt(m.visib)}sm vs VEIA ${veiaVis}sm</span>`;
+  }
+  /* Also flag the reverse: VEIA low but METAR high (less common but possible) */
+  if(veiaVis < 3 && metarVis >= 5){
+    const tip = `VEIA camera estimate is ${veiaVis} sm but METAR reports ${visTxt(m.visib)} sm. `
+      + 'The cameras may see localized fog or precipitation that the ASOS sensor does not. Check the camera images.';
+    return `<span class="cutchip" style="border-color:var(--amber);color:var(--amber)" title="${esc(tip)}">\u26a0 VEIA ${veiaVis}sm vs METAR ${visTxt(m.visib)}sm</span>`;
+  }
+  return '';
 }
 function minsChips(icao, o){
   const m = minsStatus(icao, o);
@@ -8028,7 +8447,7 @@ function renderCards(per){
       <div class="cchead">
         <div class="ccbadgewrap">${P.catBadge2}</div>
         <div class="ccidwrap"><b class="ccname">${P.name}</b><span class="ccicao">${P.icao}${P.nowChip}</span><div class="ccsrc">${P.srcTag}</div><span class="ccchg">${changeChips(st.icao)}</span><span class="ccroute">${cutChips(st)}${tideChip(st.icao)}</span></div>
-        <div class="ccline ccdata ccstack"><span class="rl rl2">${P.wxLine}</span><span class="rl rl3">${P.fcstLine}${P.restLine}</span></div>
+        <div class="ccline ccdata ccstack"><span class="rl rl2">${P.wxLine}</span><span class="rl rl3">${P.fcstLine}</span></div>
       </div>
     </div>`;
   }).join('');
@@ -8379,7 +8798,7 @@ function nowLineParts(st, w){
           let grid = `<span class="orow">`
             + cell(feedStamp('METAR', mT, !!isExpired, undefined, 'obm-'+st.icao), 'oc-lbl')
             + cell(mp[0], 'oc-vis') + cell(mp[1], 'oc-sky') + cell(mp[2], 'oc-wind')
-            + cell(rest + ' ' + changeChips(st.icao), 'oc-rest') + `</span>`;
+            + cell(rest, 'oc-rest') + `</span>`;
           if(madisPartsArr && dT){
             const q = madisPartsArr;
             grid += `<span class="orow omadis">`
@@ -8391,7 +8810,7 @@ function nowLineParts(st, w){
           }
           blocks.push(`<span class="obsgrid">${grid}</span>`);
         } else {
-          blocks.push(`<span class="feed">${feedStamp('METAR', mT, !!isExpired, undefined, 'obm-'+st.icao)} ${changeChips(st.icao)} ${metarLine}</span>`);
+          blocks.push(`<span class="feed">${feedStamp('METAR', mT, !!isExpired, undefined, 'obm-'+st.icao)} ${metarLine}</span>`);
         }
         if(presParts) blocks.push(`<span class="feed presgrp">${presParts}</span>`);
         return blocks.join('');
@@ -8424,9 +8843,9 @@ function nowLineParts(st, w){
       })(),
       /* Line one has room to the right, so the winds along the way and the cameras you would
          actually look at live there rather than crowding the restrictions on line three. */
-      routeLine: cutChips(st) + camLinksShort(st.icao) + tideChip(st.icao),
-      restLine: lastMoves(st.icao) + ''
-        + minsChips(st.icao, o)
+      routeLine: cutChips(st) + tideChip(st.icao),
+      restLine: statusChips(st.icao)
+        + minsChips(st.icao, o) + veiaDisagreeChip(st.icao)
         + wxChip(st.icao, (o && o.wx) || []) + spreadChip(o) + gustChip(o) + lightChip(st),
       fcst: tafUpdChip(st.icao) + tafNowChip(st.icao),
       chips: closureChip(st.icao) + approachChip(st.icao) + wipChip(st.icao)
@@ -8518,7 +8937,7 @@ function renderMaster(per){
     const shownCat = (w.obsCat && w.obsCat !== 'NA') ? w.obsCat : w.cat;
     const isOpen = opened.has(st.icao);
     return `<div class="mrow${isOpen?' open':''}" data-expand="${st.icao}" style="border-left-color:${catClr(shownCat)};background:${catBg(shownCat)}">
-      <div class="ml m1">${P.catBadge2}<b class="mname">${P.name}</b><span class="mid">${P.icao}</span><span class="mtag" style="font-size:11px">${P.srcTag}</span><span class="mdata"><span class="rl rl1">${P.srcLine}<span class="routegrp">${P.routeLine}</span><span class="notamgrp">${sensorChip(st.icao)}${closureChip(st.icao)}${approachChip(st.icao)}${wipChip(st.icao)}</span><button class="panelbtn" data-panel="${st.icao}">limits / FRAT</button><span class="expicon">${isOpen?'\u25b2 less':'\u25bc more'}</span></span><span class="rl rl2">${P.wxLine}</span><span class="rl rl3">${P.fcstLine}${P.restLine}</span></span></div>
+      <div class="ml m1">${P.catBadge2}<b class="mname">${P.name}</b><span class="mid">${P.icao}</span><span class="mtag" style="font-size:11px">${P.srcTag}</span><span class="mdata"><span class="rl rl1">${P.srcLine}<span class="routegrp">${P.routeLine}</span><span class="notamgrp">${sensorChip(st.icao)}${closureChip(st.icao)}${approachChip(st.icao)}${wipChip(st.icao)}</span><span class="mflags">${P.restLine}</span><button class="panelbtn" data-panel="${st.icao}">limits / FRAT</button><span class="expicon">${isOpen?'\u25b2 less':'\u25bc more'}</span></span><span class="rl rl2">${P.wxLine}</span><span class="rl rl3">${P.fcstLine}</span></span></div>
       ${secRow('METAR', st.icao, 'm2', (P.m ? `${P.mStale?P.exTag:''}<span style="color:${P.mStale?'var(--ifr)':'var(--amber)'};font-weight:700">${agoTxt(P.m.obsTime||P.m.reportTime).replace(' ago','')}</span> <span style="color:${P.mStale?'var(--ifr)':'var(--mut)'}">${esc(P.m.rawOb)}</span> <span class="fstamp" style="color:${P.mStale?'var(--ifr)':'var(--mut)'}">${fmtLZ(P.m.obsTime||P.m.reportTime)}</span>` : '<span style="color:var(--mut)">no METAR</span>'), P.wrap)}
       ${secRow('MADIS', st.icao, 'm2', ((P.md ? `<span style="color:${P.dStale?'var(--ifr)':'var(--amber)'};font-weight:700">${agoTxt(P.md.valid).replace(' ago','')}</span> ` : '') + (madisSuperseded(st.icao)
         ? `<span class="supersede" title="${esc('An earlier observation from the same stream as the METAR, not a separate reading. The METAR above is newer and supersedes it; the decoded values are on the observation line.')}">SUPERSEDED</span> ` + (P.md && P.md.metar ? `<span style="color:var(--mut)">${esc(P.md.metar)}</span> <span class="fstamp" style="color:var(--mut)">${fmtLZ(P.md.valid)}</span>` : P.madisLine)
@@ -9414,9 +9833,10 @@ const ALERT_KINDS = {
   mgmt: {label:'Wind enters management approval',   tone:[[698,0],[698,0.13]],             gain:0.14},
   over: {label:'Wind over company limit',           tone:[[698,0],[880,0.12],[1046,0.24]], gain:0.20},
   cut:  {label:'Cutoff station over its limit',     tone:[[1046,0],[784,0.13],[1046,0.26]],gain:0.18},
+  chg:  {label:'Ceiling or visibility change',      tone:[[880,0],[660,0.10]],             gain:0.12},
 };
 let sndOn = false;
-let alertPrefs = {cat:true, mvfr:false, mgmt:true, over:true, cut:true};
+let alertPrefs = {cat:true, mvfr:false, mgmt:true, over:true, cut:true, chg:true};
 try{
   sndOn = localStorage.getItem('wxb_snd')==='1';
   const sp = JSON.parse(localStorage.getItem('wxb_snd_kinds')||'null');
