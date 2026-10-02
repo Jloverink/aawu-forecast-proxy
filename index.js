@@ -5319,14 +5319,17 @@ function pushNotify(title, body, tag){
   if(!pushGranted) return;
   if(tag && pushSentIds.has(tag)) return;
   /* Only push during work hours 6am-6pm Alaska time */
+  let akNow;
   try{
+    akNow = new Intl.DateTimeFormat('en-US',{timeZone:'America/Juneau',hour:'numeric',minute:'2-digit',hour12:true}).format(new Date());
     const hr = parseInt(new Intl.DateTimeFormat('en-US',{timeZone:'America/Juneau',hour:'numeric',hour12:false}).format(new Date()));
     if(hr < 6 || hr >= 18) return;
   }catch(e){}
   if(tag) pushSentIds.add(tag);
+  const stamp = akNow ? akNow + ' AKT \u2014 ' : '';
   try{
     const n = new Notification(title, {
-      body, tag: tag || undefined, icon: '\ud83c\udf29\ufe0f',
+      body: stamp + body, tag: tag || undefined, icon: '\ud83c\udf29\ufe0f',
       requireInteraction: true,   /* stay until dismissed */
     });
     n.onclick = ()=>{ window.focus(); n.close(); };
@@ -7105,7 +7108,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b267-map-fix';
+const BUILD_TAG = 'b268-notif-ts';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
