@@ -863,8 +863,10 @@ body.kiosk #camWrap{columns:560px 3}
     <h2>Enroute from Juneau</h2>
     <div class="note" style="margin:0 0 8px">Worst conditions along each corridor from current METAR, MADIS 5 minute obs, and TAF groups in the selected window. All departures start in central southeast.</div>
     <div class="note" style="margin:0 0 8px;font-size:11px">VFR: cig above 3,000 ft and vis above 5 sm · MVFR: cig 1,000-3,000 ft and/or vis 3-5 sm · IFR: cig 500-999 ft and/or vis 1-3 sm · LIFR: below 500 ft / 1 sm</div>
-    <div id="corrmap" style="height:720px;max-width:600px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px;position:relative;z-index:0"></div>
-    <div id="enroute"></div>
+    <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+      <div id="corrmap" style="height:720px;width:500px;min-width:400px;flex-shrink:0;border-radius:8px;border:1px solid var(--line);position:relative;z-index:0"></div>
+      <div id="enroute" style="flex:1;min-width:400px;overflow-x:auto"></div>
+    </div>
   </div>
 
   <div class="section">
@@ -7338,7 +7340,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b274-fa-zone-cat';
+const BUILD_TAG = 'b275-flex-layout';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
