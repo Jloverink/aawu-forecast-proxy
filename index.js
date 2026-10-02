@@ -856,7 +856,7 @@ body.kiosk #camWrap{columns:560px 3}
     <h2>Enroute from Juneau</h2>
     <div class="note" style="margin:0 0 8px">Worst conditions along each corridor from current METAR, MADIS 5 minute obs, and TAF groups in the selected window. All departures start in central southeast.</div>
     <div class="note" style="margin:0 0 8px;font-size:11px">VFR: cig above 3,000 ft and vis above 5 sm · MVFR: cig 1,000-3,000 ft and/or vis 3-5 sm · IFR: cig 500-999 ft and/or vis 1-3 sm · LIFR: below 500 ft / 1 sm</div>
-    <div id="corrmap" style="height:480px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px;position:relative;z-index:0"></div>
+    <div id="corrmap" style="height:300px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px;position:relative;z-index:0"></div>
     <div id="enroute"></div>
   </div>
 
@@ -3123,6 +3123,13 @@ function renderWarn(){
 }
 const TIDE_API = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter';
 const FA_ZONES = {JB:'Lynn Canal and Glacier Bay', JC:'Central SE AK', JD:'Southern SE AK', JE:'Eastern Gulf Coast', JF:'SE AK Coastal Waters'};
+const FA_PLAIN = {
+  JB:'Haines, Skagway, Gustavus, Glacier Bay',
+  JC:'Juneau, Hoonah, Angoon, Tenakee, Elfin Cove, Pelican',
+  JD:'Sitka, Kake, Petersburg, Wrangell, Klawock, Ketchikan',
+  JE:'Yakutat, Gulf Coast',
+  JF:'Offshore waters, coastal passes and straits'
+};
 function zoneQuadsTxt(zid){ return QUADS.filter(q=>(QUAD_ZONES[q]||[]).includes(zid)).join(', ') || 'offshore'; }
 function zName(zid){ return FA_ZONES[zid] || zid; }
 function zoneTowns(zid){
@@ -6003,15 +6010,19 @@ function renderBoard(){
         maxBounds: [[54, -142],[61, -129]],
         maxBoundsViscosity: 0.8
       });
-      /* dark aviation-friendly tile layer */
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        subdomains: 'abcd',
+      /* dark basemap - Esri dark gray (free, no API key) */
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
         maxZoom: 13,
         minZoom: 5
       }).addTo(window._corrMap);
-      /* compact attribution in corner */
+      /* reference labels on top */
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 13,
+        minZoom: 5
+      }).addTo(window._corrMap);
+      /* compact attribution */
       L.control.attribution({position:'bottomright', prefix:false})
-        .addAttribution('© <a href="https://carto.com">CARTO</a> © <a href="https://osm.org">OSM</a>')
+        .addAttribution('© Esri, HERE, Garmin, NGA')
         .addTo(window._corrMap);
       window._corrLayers = L.layerGroup().addTo(window._corrMap);
     }
@@ -6031,10 +6042,16 @@ function renderBoard(){
       if(c.cat !== c.now.cat){
         L.polyline(coords, {color: catHex(c.cat), weight: 3.5, opacity: 0.6, dashArray: '8 5'}).addTo(layers);
       }
-      /* destination marker */
+      /* destination marker with real weather tooltip */
+      const dObs = ((window.lastPer||{})[c.dest]||{}).obs || {};
+      const tipLines = [`<b>${ds.name}</b> <span style="color:${nowCol}">${c.now.cat}</span>`];
+      if(dObs.cig !== undefined && dObs.cig !== null) tipLines.push('Cig ' + fmtCig(dObs.cig));
+      else tipLines.push('Cig n/a');
+      if(dObs.vis !== undefined && dObs.vis !== null) tipLines.push('Vis ' + visTxt(dObs.visRaw ?? dObs.vis) + ' sm');
+      if(dObs.wspd !== undefined) tipLines.push('Wind ' + (dObs.wdir !== null && dObs.wdir !== undefined ? dObs.wdir + '°' : 'VRB') + ' ' + (dObs.wspd||0) + (dObs.wgst ? 'G' + dObs.wgst : '') + ' kt');
       L.circleMarker([ds.lat, ds.lon], {
         radius: 6, fillColor: nowCol, fillOpacity: 0.95, color: '#0e141b', weight: 2
-      }).bindTooltip(ds.name + ' (' + c.now.cat + ')', {
+      }).bindTooltip(tipLines.join('<br>'), {
         permanent: false, direction: 'top', className: 'corrmap-tip',
         offset: [0, -8]
       }).addTo(layers);
@@ -6132,6 +6149,7 @@ function renderBoard(){
     const zo = state.fa.zones[z];
     return `<div class="detailcard" data-zone="${z}">
       <h3>${z} \u2022 ${zo.name} <span style="font-size:12px;color:var(--mut);font-family:var(--body);font-weight:400">valid til ${zTimeTxt(zo.validUntil)}</span></h3>
+      <div style="font-size:11.5px;color:var(--mut);margin:-2px 0 6px;font-family:var(--body)">${FA_PLAIN[z]||''}</div>
       ${zo.airmets.map(a=>{
         const m = String(a).match(/^\*{2,}(.+?)\*{2,}(.*)$/);
         return `<div class="airmetrow">${m ? '<b>'+esc(m[1].trim())+'</b> '+esc(m[2].trim()) : esc(a)}</div>`;
@@ -7087,7 +7105,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b266-pill-fix';
+const BUILD_TAG = 'b267-map-fix';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
