@@ -3137,11 +3137,11 @@ function renderWarn(){
 const TIDE_API = 'https://api.tidesandcurrents.noaa.gov/api/prod/datagetter';
 const FA_ZONES = {JB:'Lynn Canal and Glacier Bay', JC:'Central SE AK', JD:'Southern SE AK', JE:'Eastern Gulf Coast', JF:'SE AK Coastal Waters'};
 const FA_PLAIN = {
-  JB:'Haines, Skagway, Gustavus, Glacier Bay',
-  JC:'Juneau, Hoonah, Angoon, Tenakee, Elfin Cove, Pelican',
-  JD:'Sitka, Kake, Petersburg, Wrangell, Klawock, Ketchikan',
-  JE:'Yakutat, Gulf Coast',
-  JF:'Offshore waters, coastal passes and straits'
+  JB:'Haines, Skagway, Gustavus, Elfin Cove, Pelican',
+  JC:'Juneau, Hoonah, Tenakee, Angoon, Kake, Sitka, Petersburg',
+  JD:'Wrangell, Klawock, Ketchikan',
+  JE:'Yakutat',
+  JF:'Pelican, Sitka, coastal waters'
 };
 function zoneQuadsTxt(zid){ return QUADS.filter(q=>(QUAD_ZONES[q]||[]).includes(zid)).join(', ') || 'offshore'; }
 function zName(zid){ return FA_ZONES[zid] || zid; }
@@ -6035,16 +6035,14 @@ function renderBoard(){
     };
 
     /* build zone -> stations mapping from QUAD_ZONES */
-    const ZONE_STNS = {};
-    Object.entries(QUAD_ZONES).forEach(([quad, zones]) => {
-      const stns = STATIONS.filter(s => s.quad === quad);
-      zones.forEach(zid => {
-        if(!ZONE_STNS[zid]) ZONE_STNS[zid] = [];
-        stns.forEach(s => { if(!ZONE_STNS[zid].find(x=>x===s.icao)) ZONE_STNS[zid].push(s.icao); });
-      });
-    });
-    /* Gulf Coast quad is not in QUADS array but is in QUAD_ZONES */
-    if(!ZONE_STNS['JE']){ ZONE_STNS['JE'] = STATIONS.filter(s=>s.quad==='Gulf Coast').map(s=>s.icao); }
+    /* zone -> stations: curated per AKS ops, JNU in every zone since all flights route through */
+    const ZONE_STNS = {
+      JB: ['PAJN','PAHN','PAGY','PAGS','PAEL','PEC'],                          // Lynn Canal & Glacier Bay
+      JC: ['PAJN','PAOH','TKE','PAGN','PAFE','PASI','PAPG'],                   // Central SE AK
+      JD: ['PAJN','PAWG','PAKW','PAKT'],                                        // Southern SE AK
+      JE: ['PAJN','PAYA'],                                                       // Eastern Gulf Coast
+      JF: ['PAJN','PEC','PASI']                                                  // SE AK Coastal Waters
+    };
 
     /* determine zone color from lowest cig/vis in the AREA FORECAST text */
     const catRank = {VFR:0, MVFR:1, IFR:2, LIFR:3};
@@ -6073,7 +6071,7 @@ function renderBoard(){
       const townList = FA_PLAIN[zid]||'';
       const zoneName = (FA_ZONES[zid]||zid).replace(' and ',' & ');
 
-      /* station current conditions summary */
+      /* station current conditions summary - FRAT-oriented: cat, cig, vis, wind, wx */
       const stns = ZONE_STNS[zid] || [];
       const per = window.lastPer || {};
       const stnLines = stns.map(icao => {
@@ -6082,10 +6080,33 @@ function renderBoard(){
         const nm = s ? s.name : icao;
         const c2 = p.obsCat || 'NA';
         const o = p.obs || {};
-        let detail = '';
-        if(o.cig !== null && o.cig !== undefined) detail += 'cig ' + fmtCig(o.cig);
-        if(o.vis !== null && o.vis !== undefined) detail += (detail?', ':'') + 'vis ' + visTxt(o.visRaw ?? o.vis);
-        return `<span style="color:${catHex(c2)};font-weight:700">${c2}</span> ${nm}${detail ? ' <span style="color:#92a7ba">(' + detail + ')</span>' : ''}`;
+        /* ceiling + vis */
+        let cv = '';
+        if(o.cig !== null && o.cig !== undefined) cv += fmtCig(o.cig);
+        if(o.vis !== null && o.vis !== undefined) cv += (cv ? ', ' : '') + visTxt(o.visRaw ?? o.vis) + ' sm';
+        /* wind */
+        let wind = '';
+        if(o.wspd){
+          wind = (o.wdir !== null && o.wdir !== undefined ? String(o.wdir).padStart(3,'0') + '°' : 'VRB') + ' ' + o.wspd;
+          if(o.wgst) wind += 'G' + o.wgst;
+          wind += 'kt';
+        }
+        /* weather phenomena - the FRAT cares about precip, mist, fog */
+        const wxArr = o.wx || [];
+        const wxStr = wxArr.length ? wxSummary(wxArr) : '';
+        /* temp/dewpoint spread (fog/mist risk) */
+        let spread = '';
+        if(o.temp !== null && o.temp !== undefined && o.dewp !== null && o.dewp !== undefined){
+          const sp = Math.round(o.temp - o.dewp);
+          if(sp <= 3) spread = `<span style="color:${sp <= 1 ? '#e2574b' : '#ffaa00'};font-size:10px">T/D ${o.temp}/${o.dewp} (spread ${sp})</span>`;
+        }
+        /* build the line */
+        let line = `<span style="color:${catHex(c2)};font-weight:700">${c2}</span> <b>${nm}</b>`;
+        const bits = [cv, wind].filter(Boolean);
+        if(bits.length) line += ` <span style="color:#92a7ba;font-size:10.5px">${bits.join(' · ')}</span>`;
+        if(wxStr) line += `<br><span style="margin-left:38px;color:#c8d6e0;font-size:10.5px">⛅ ${wxStr}</span>`;
+        if(spread) line += `<br><span style="margin-left:38px">${spread}</span>`;
+        return line;
       }).filter(Boolean);
 
       let html = `<div style="margin-bottom:8px"><b style="font-size:13px">${zid}: ${zoneName}</b>`;
@@ -7610,7 +7631,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b280-hover-zones';
+const BUILD_TAG = 'b281-zone-frat';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
