@@ -98,10 +98,11 @@ label{color:var(--mut);font-size:13px}
 .corrmap-zone-label{background:transparent!important;border:none!important;box-shadow:none!important;font-family:'Barlow Condensed',sans-serif!important;font-size:13px!important;font-weight:700!important;letter-spacing:0.5px!important;text-shadow:0 1px 4px rgba(0,0,0,.8)!important;pointer-events:none!important}
 .corrmap-zone-label::before{display:none!important}
 .leaflet-container{background:#0e141b!important;font-family:'Barlow',sans-serif!important}
-#corrmap{overflow:visible!important}
-#corrmap .leaflet-pane{overflow:visible!important}
-#corrmap .leaflet-tooltip-pane{overflow:visible!important}
-#corrmap .leaflet-map-pane{overflow:visible!important}
+#corrmap .leaflet-popup-content-wrapper{background:#0e141b!important;color:#e9f0f6!important;border:1px solid #263649!important;border-radius:6px!important;box-shadow:0 4px 16px rgba(0,0,0,.6)!important;font-family:'Barlow',sans-serif!important}
+#corrmap .leaflet-popup-content{margin:10px 12px!important;max-height:420px;overflow-y:auto;font-size:11.5px;line-height:1.4}
+#corrmap .leaflet-popup-tip{background:#0e141b!important;border:1px solid #263649!important}
+#corrmap .leaflet-popup-close-button{color:#92a7ba!important;font-size:18px!important;padding:4px 6px!important}
+#corrmap .leaflet-popup-close-button:hover{color:#e9f0f6!important}
 /* limits modal */
 #modalBg{position:fixed;inset:0;background:rgba(4,8,12,.72);z-index:50;display:none}
 #modal{position:fixed;z-index:51;top:4vh;left:50%;transform:translateX(-50%);width:min(860px,94vw);max-height:90vh;overflow-y:auto;background:var(--panel);border:1px solid var(--amber);border-radius:12px;padding:18px 20px;display:none}
@@ -862,7 +863,7 @@ body.kiosk #camWrap{columns:560px 3}
     <h2>Enroute from Juneau</h2>
     <div class="note" style="margin:0 0 8px">Worst conditions along each corridor from current METAR, MADIS 5 minute obs, and TAF groups in the selected window. All departures start in central southeast.</div>
     <div class="note" style="margin:0 0 8px;font-size:11px">VFR: cig above 3,000 ft and vis above 5 sm · MVFR: cig 1,000-3,000 ft and/or vis 3-5 sm · IFR: cig 500-999 ft and/or vis 1-3 sm · LIFR: below 500 ft / 1 sm</div>
-    <div id="corrmap" style="height:520px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px;position:relative;z-index:0"></div>
+    <div id="corrmap" style="height:720px;max-width:600px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px;position:relative;z-index:0"></div>
     <div id="enroute"></div>
   </div>
 
@@ -6027,19 +6028,101 @@ function renderBoard(){
       JF: [_A, [59.5,-141.8], _L, _M, _E, _F, _G, _H, _I, _J, _K]
     };
 
-    /* determine zone condition color from FA data */
-    function zoneCondColor(zid){
-      const z = (state.fa||{}).zones && state.fa.zones[zid];
-      if(!z) return {fill:'#5b6c7d', border:'#5b6c7d', label:'N/A'};
-      const txt = (z.airmets||[]).join(' ').toUpperCase();
-      const hasIFR = txt.includes('IFR') || txt.includes('LIFR');
-      const hasMTN = txt.includes('MT OBSC') || txt.includes('MTNS OBSC') || txt.includes('MTS OBSC');
-      const hasFZ  = txt.includes('FZRA') || txt.includes('FZDZ');
-      if(hasIFR) return {fill:'#e2574b', border:'#e2574b', label:'IFR AIRMET'};
-      if(hasMTN) return {fill:'#f2a93b', border:'#f2a93b', label:'MTN OBSC'};
-      if(hasFZ)  return {fill:'#c964dd', border:'#c964dd', label:'FZRA'};
-      if(txt.includes('AIRMET')) return {fill:'#4da3e8', border:'#4da3e8', label:'AIRMET'};
-      return {fill:'#46c17a', border:'#3a9960', label:'OK'};
+    /* build zone -> stations mapping from QUAD_ZONES */
+    const ZONE_STNS = {};
+    Object.entries(QUAD_ZONES).forEach(([quad, zones]) => {
+      const stns = STATIONS.filter(s => s.quad === quad);
+      zones.forEach(zid => {
+        if(!ZONE_STNS[zid]) ZONE_STNS[zid] = [];
+        stns.forEach(s => { if(!ZONE_STNS[zid].find(x=>x===s.icao)) ZONE_STNS[zid].push(s.icao); });
+      });
+    });
+    /* Gulf Coast quad is not in QUADS array but is in QUAD_ZONES */
+    if(!ZONE_STNS['JE']){ ZONE_STNS['JE'] = STATIONS.filter(s=>s.quad==='Gulf Coast').map(s=>s.icao); }
+
+    /* determine zone color from worst CURRENT obs at stations in the zone */
+    const catRank = {VFR:0, MVFR:1, IFR:2, LIFR:3};
+    function zoneCurrentCat(zid){
+      const stns = ZONE_STNS[zid] || [];
+      const per = window.lastPer || {};
+      let worst = -1, worstCat = 'NA';
+      stns.forEach(icao => {
+        const p = per[icao];
+        if(p && p.obsCat && catRank[p.obsCat] !== undefined){
+          if(catRank[p.obsCat] > worst){ worst = catRank[p.obsCat]; worstCat = p.obsCat; }
+        }
+      });
+      return worstCat;
+    }
+
+    /* build full FA brief HTML for zone popup */
+    function zoneBriefHtml(zid){
+      const zData = (state.fa||{}).zones && state.fa.zones[zid];
+      const cat = zoneCurrentCat(zid);
+      const col = catHex(cat);
+      const townList = FA_PLAIN[zid]||'';
+      const zoneName = (FA_ZONES[zid]||zid).replace(' and ',' & ');
+
+      /* station current conditions summary */
+      const stns = ZONE_STNS[zid] || [];
+      const per = window.lastPer || {};
+      const stnLines = stns.map(icao => {
+        const p = per[icao]; if(!p) return null;
+        const s = STATIONS.find(x=>x.icao===icao);
+        const nm = s ? s.name : icao;
+        const c2 = p.obsCat || 'NA';
+        const o = p.obs || {};
+        let detail = '';
+        if(o.cig !== null && o.cig !== undefined) detail += 'cig ' + fmtCig(o.cig);
+        if(o.vis !== null && o.vis !== undefined) detail += (detail?', ':'') + 'vis ' + visTxt(o.visRaw ?? o.vis);
+        return `<span style="color:${catHex(c2)};font-weight:700">${c2}</span> ${nm}${detail ? ' <span style="color:#92a7ba">(' + detail + ')</span>' : ''}`;
+      }).filter(Boolean);
+
+      let html = `<div style="margin-bottom:8px"><b style="font-size:13px">${zid}: ${zoneName}</b>`;
+      if(townList) html += `<br><span style="color:#92a7ba;font-size:10.5px">${townList}</span>`;
+      html += `<br><span style="font-size:12px">Current worst: </span><span style="color:${col};font-weight:700;font-size:13px">${cat}</span>`;
+      html += `</div>`;
+
+      /* station breakdown */
+      if(stnLines.length){
+        html += `<div style="margin-bottom:8px;border-left:2px solid ${col};padding-left:6px">`;
+        html += stnLines.join('<br>');
+        html += `</div>`;
+      }
+
+      /* FA brief text */
+      if(zData){
+        const lines = [];
+        if(zData.airmets && zData.airmets.length){
+          zData.airmets.forEach(a => {
+            lines.push('<span style="color:var(--ifr);font-weight:700">AIRMET</span> ' + hlWx(esc(a)));
+          });
+        }
+        if(zData.cloudsWx && zData.cloudsWx.length){
+          lines.push('<span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">CLOUDS/WX</span>');
+          zData.cloudsWx.forEach(l => lines.push(hlWx(esc(l))));
+        }
+        if(zData.passes){
+          lines.push(hlWx(esc(zData.passes)));
+        }
+        if(zData.turb && zData.turb.length && zData.turb.join('').trim() !== 'NIL SIG.'){
+          lines.push('<span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">TURB</span>');
+          zData.turb.forEach(l => lines.push(esc(l)));
+        }
+        if(zData.ice && zData.ice.length && zData.ice.join('').trim() !== 'NIL SIG.'){
+          lines.push('<span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">ICE/FZLVL</span>');
+          zData.ice.forEach(l => lines.push(hlWx(esc(l))));
+        }
+        if(zData.outlook){
+          lines.push('<span style="color:#92a7ba;font-weight:600;font-size:10px;letter-spacing:.5px">OUTLOOK</span> ' + hlWx(esc(zData.outlook)));
+        }
+        if(lines.length){
+          html += `<div style="font-family:'Barlow',monospace;font-size:11px;line-height:1.4;white-space:pre-wrap;border-top:1px solid #263649;padding-top:6px">${lines.join('\n')}</div>`;
+        }
+      } else {
+        html += `<div style="color:#5b6c7d;font-style:italic">Area forecast not loaded</div>`;
+      }
+      return html;
     }
 
     /* init or update: keep map instance across refreshes so zoom/pan persists */
@@ -6052,7 +6135,7 @@ function renderBoard(){
         minZoom: 6
       });
       /* fit to SE Alaska bounds so the map fills vertically */
-      window._corrMap.fitBounds([[54.5, -141.5],[60.2, -130.5]], {padding: [10, 10]});
+      window._corrMap.fitBounds([[54.5, -141.0],[60.2, -130.5]], {padding: [8, 8]});
       /* dark basemap - Esri dark gray (free, no API key) */
       L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
         maxZoom: 13, minZoom: 5
@@ -6072,25 +6155,25 @@ function renderBoard(){
     /* draw FA zone polygons first (underneath everything) */
     Object.keys(FA_ZONE_POLYS).forEach(zid=>{
       const pts = FA_ZONE_POLYS[zid];
-      const cond = zoneCondColor(zid);
-      const zData = (state.fa||{}).zones && state.fa.zones[zid];
+      const cat = zoneCurrentCat(zid);
+      const col = catHex(cat);
       const zoneName = (FA_ZONES[zid]||zid).replace(' and ',' & ');
-      const townList = FA_PLAIN[zid]||'';
-      /* zone polygon */
+      /* zone polygon colored by worst current obs */
       const poly = L.polygon(pts, {
-        color: cond.border, weight: 1.5, opacity: 0.7,
-        fillColor: cond.fill, fillOpacity: 0.12,
+        color: col, weight: 1.5, opacity: 0.7,
+        fillColor: col, fillOpacity: 0.15,
         interactive: true
       });
-      /* tooltip with zone summary */
-      const tipParts = [`<b>${zid}: ${zoneName}</b>`];
-      if(townList) tipParts.push(`<span style="color:#92a7ba;font-size:11px">${townList}</span>`);
-      tipParts.push(`<span style="color:${cond.fill};font-weight:700">${cond.label}</span>`);
-      if(zData && zData.airmets && zData.airmets.length){
-        zData.airmets.forEach(a=> tipParts.push(`<span style="font-size:10.5px;color:#e9f0f6">${a.slice(0,100)}</span>`));
-      }
-      poly.bindTooltip(tipParts.join('<br>'), {
+      /* simple hover tooltip */
+      poly.bindTooltip(`<b>${zid}: ${zoneName}</b><br><span style="color:${col};font-weight:700">${cat}</span> <span style="color:#92a7ba;font-size:10.5px">current worst</span>`, {
         sticky: true, className: 'corrmap-tip', offset: [0, 0]
+      });
+      /* click opens full brief popup */
+      poly.on('click', function(e){
+        L.popup({maxWidth: 360, minWidth: 280, className: ''})
+          .setLatLng(e.latlng)
+          .setContent(zoneBriefHtml(zid))
+          .openOn(map);
       });
       poly.addTo(layers);
 
@@ -6100,7 +6183,7 @@ function renderBoard(){
       L.marker([cLat, cLon], {
         icon: L.divIcon({
           className: 'corrmap-zone-label',
-          html: `<span style="color:${cond.fill};opacity:0.85">${zid}</span>`,
+          html: `<span style="color:${col};opacity:0.85">${zid}</span>`,
           iconSize: [30, 16], iconAnchor: [15, 8]
         }),
         interactive: false
@@ -6178,10 +6261,11 @@ function renderBoard(){
           `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:11px">${c2}</span></span>`
         ).join('')
         + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:4px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">forecast change</span></span>'
-        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">FA Zone Fill</b>'
-        + [['#46c17a','OK'],['#f2a93b','MTN OBSC'],['#e2574b','IFR'],['#4da3e8','OTHER']].map(([col,lbl])=>
-          `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${col};opacity:0.6;display:inline-block"></span><span style="font-size:11px">${lbl}</span></span>`
-        ).join('');
+        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Zone (current worst)</b>'
+        + ['VFR','MVFR','IFR','LIFR'].map(c3=>
+          `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c3)};opacity:0.6;display:inline-block"></span><span style="font-size:11px">${c3}</span></span>`
+        ).join('')
+        + '<br><span style="font-size:10px;color:#92a7ba">click zone for full brief</span>';
       return d;
     };
     leg.addTo(map);
@@ -7213,7 +7297,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b271-cam-zones';
+const BUILD_TAG = 'b272-zone-brief';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
