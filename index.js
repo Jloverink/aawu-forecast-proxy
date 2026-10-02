@@ -98,6 +98,10 @@ label{color:var(--mut);font-size:13px}
 .corrmap-zone-label{background:transparent!important;border:none!important;box-shadow:none!important;font-family:'Barlow Condensed',sans-serif!important;font-size:13px!important;font-weight:700!important;letter-spacing:0.5px!important;text-shadow:0 1px 4px rgba(0,0,0,.8)!important;pointer-events:none!important}
 .corrmap-zone-label::before{display:none!important}
 .leaflet-container{background:#0e141b!important;font-family:'Barlow',sans-serif!important}
+#corrmap{overflow:visible!important}
+#corrmap .leaflet-pane{overflow:visible!important}
+#corrmap .leaflet-tooltip-pane{overflow:visible!important}
+#corrmap .leaflet-map-pane{overflow:visible!important}
 /* limits modal */
 #modalBg{position:fixed;inset:0;background:rgba(4,8,12,.72);z-index:50;display:none}
 #modal{position:fixed;z-index:51;top:4vh;left:50%;transform:translateX(-50%);width:min(860px,94vw);max-height:90vh;overflow-y:auto;background:var(--panel);border:1px solid var(--amber);border-radius:12px;padding:18px 20px;display:none}
@@ -6103,27 +6107,56 @@ function renderBoard(){
       if(c.cat !== c.now.cat){
         L.polyline(coords, {color: catHex(c.cat), weight: 2, opacity: 0.4, dashArray: '6 4'}).addTo(layers);
       }
-      /* destination marker with real weather tooltip */
-      const dObs = ((window.lastPer||{})[c.dest]||{}).obs || {};
+      /* destination marker with real weather + TAF tooltip */
+      const dPer = (window.lastPer||{})[c.dest] || {};
+      const dObs = dPer.obs || {};
       const tipLines = [`<b>${ds.name}</b> <span style="color:${nowCol}">${c.now.cat}</span>`];
       if(dObs.cig !== undefined && dObs.cig !== null) tipLines.push('Cig ' + fmtCig(dObs.cig));
       else tipLines.push('Cig n/a');
       if(dObs.vis !== undefined && dObs.vis !== null) tipLines.push('Vis ' + visTxt(dObs.visRaw ?? dObs.vis) + ' sm');
       if(dObs.wspd !== undefined) tipLines.push('Wind ' + (dObs.wdir !== null && dObs.wdir !== undefined ? dObs.wdir + '°' : 'VRB') + ' ' + (dObs.wspd||0) + (dObs.wgst ? 'G' + dObs.wgst : '') + ' kt');
+      /* TAF forecast line */
+      if(dPer.tafCat && dPer.tafCat !== 'NA'){
+        const tw = dPer.tafWorst || {};
+        const tafCol = catHex(dPer.tafCat);
+        let tafDetail = '';
+        if(tw.cig !== null && tw.cig !== undefined) tafDetail += 'cig ' + fmtCig(tw.cig);
+        if(tw.vis !== null && tw.vis !== undefined) tafDetail += (tafDetail ? ', ' : '') + 'vis ' + visTxt(tw.visRaw ?? tw.vis) + ' sm';
+        tipLines.push(`<span style="color:#92a7ba;font-size:10.5px">TAF worst:</span> <span style="color:${tafCol};font-weight:700">${dPer.tafCat}</span>${tafDetail ? ' <span style="color:#92a7ba;font-size:10.5px">(' + tafDetail + ')</span>' : ''}`);
+      } else {
+        tipLines.push('<span style="color:#5b6c7d;font-size:10.5px">No TAF</span>');
+      }
+      /* pick tooltip direction based on station position to avoid clipping */
+      const tipDir = ds.lat > 59 ? 'bottom' : ds.lat < 55.5 ? 'top' : ds.lon < -136 ? 'right' : 'top';
       L.circleMarker([ds.lat, ds.lon], {
         radius: 6, fillColor: nowCol, fillOpacity: 0.95, color: '#0e141b', weight: 2
       }).bindTooltip(tipLines.join('<br>'), {
-        permanent: false, direction: 'top', className: 'corrmap-tip',
-        offset: [0, -8]
+        permanent: false, direction: tipDir, className: 'corrmap-tip',
+        offset: [0, tipDir==='bottom' ? 8 : -8]
       }).addTo(layers);
     });
-    /* JNU hub marker */
+    /* JNU hub marker with weather */
+    const jnuPer = (window.lastPer||{})['PAJN'] || {};
+    const jnuObs = jnuPer.obs || {};
+    const jnuCol = catHex(jnuPer.obsCat || 'NA');
+    const jnuTip = [`<b>Juneau</b> <span style="color:${jnuCol}">${jnuPer.obsCat||'N/A'}</span>`];
+    if(jnuObs.cig !== undefined && jnuObs.cig !== null) jnuTip.push('Cig ' + fmtCig(jnuObs.cig));
+    if(jnuObs.vis !== undefined && jnuObs.vis !== null) jnuTip.push('Vis ' + visTxt(jnuObs.visRaw ?? jnuObs.vis) + ' sm');
+    if(jnuObs.wspd !== undefined) jnuTip.push('Wind ' + (jnuObs.wdir !== null && jnuObs.wdir !== undefined ? jnuObs.wdir + '°' : 'VRB') + ' ' + (jnuObs.wspd||0) + (jnuObs.wgst ? 'G' + jnuObs.wgst : '') + ' kt');
+    if(jnuPer.tafCat && jnuPer.tafCat !== 'NA'){
+      const jtw = jnuPer.tafWorst || {};
+      let jtd = '';
+      if(jtw.cig !== null && jtw.cig !== undefined) jtd += 'cig ' + fmtCig(jtw.cig);
+      if(jtw.vis !== null && jtw.vis !== undefined) jtd += (jtd ? ', ' : '') + 'vis ' + visTxt(jtw.visRaw ?? jtw.vis) + ' sm';
+      jnuTip.push(`<span style="color:#92a7ba;font-size:10.5px">TAF worst:</span> <span style="color:${catHex(jnuPer.tafCat)};font-weight:700">${jnuPer.tafCat}</span>${jtd ? ' <span style="color:#92a7ba;font-size:10.5px">(' + jtd + ')</span>' : ''}`);
+    }
     L.circleMarker([jnu.lat, jnu.lon], {
       radius: 9, fillColor: '#f2a93b', fillOpacity: 1, color: '#0e141b', weight: 2.5
     }).bindTooltip('JNU', {
       permanent: true, direction: 'top', className: 'corrmap-hub',
       offset: [0, -12]
-    }).addTo(layers);
+    }).on('click', function(){ this.unbindTooltip(); this.bindTooltip(jnuTip.join('<br>'), {permanent:false, direction:'bottom', className:'corrmap-tip', offset:[0,10]}); this.openTooltip(); })
+    .addTo(layers);
 
     /* legend overlay */
     if(window._corrLegend){ window._corrLegend.remove(); window._corrLegend = null; }
@@ -7170,7 +7203,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b269-zone-map';
+const BUILD_TAG = 'b270-map-taf';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
