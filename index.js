@@ -6190,6 +6190,50 @@ function renderBoard(){
       }).addTo(layers);
     });
 
+    /* split-circle SVG: left half = current obs, right half = TAF forecast */
+    const noTafCol = '#3a4555';
+    function splitDotSvg(obsCol, tafCol, sz){
+      const r = sz/2 - 1.5;
+      const cx = sz/2, cy = sz/2;
+      return `<svg width="${sz}" height="${sz}" xmlns="http://www.w3.org/2000/svg">`
+        + `<path d="M${cx},${cy-r} A${r},${r} 0 0,0 ${cx},${cy+r} Z" fill="${obsCol}"/>`
+        + `<path d="M${cx},${cy-r} A${r},${r} 0 0,1 ${cx},${cy+r} Z" fill="${tafCol}"/>`
+        + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#0e141b" stroke-width="2"/>`
+        + `<line x1="${cx}" y1="${cy-r+1}" x2="${cx}" y2="${cy+r-1}" stroke="#0e141b" stroke-width="1.2" opacity="0.7"/>`
+        + `</svg>`;
+    }
+
+    /* build tooltip lines for any station */
+    function stnTipLines(name, per){
+      const obs = per.obs || {};
+      const obsCat = per.obsCat || 'NA';
+      const obsCol = catHex(obsCat);
+      const tafCat = (per.tafCat && per.tafCat !== 'NA') ? per.tafCat : null;
+      const tafCol = tafCat ? catHex(tafCat) : null;
+      const lines = [`<b>${name}</b>`];
+      /* current obs line */
+      let obsDetail = '';
+      if(obs.cig !== null && obs.cig !== undefined) obsDetail += 'cig ' + fmtCig(obs.cig);
+      if(obs.vis !== null && obs.vis !== undefined) obsDetail += (obsDetail?', ':'') + 'vis ' + visTxt(obs.visRaw ?? obs.vis);
+      if(obs.wspd !== undefined) obsDetail += (obsDetail?', ':'') + (obs.wdir !== null && obs.wdir !== undefined ? obs.wdir + '°' : 'VRB') + ' ' + (obs.wspd||0) + (obs.wgst ? 'G' + obs.wgst : '') + 'kt';
+      lines.push(`<span style="font-size:10px;color:#92a7ba">OBS:</span> <span style="color:${obsCol};font-weight:700">${obsCat}</span>${obsDetail ? ' <span style="color:#92a7ba;font-size:10px">(' + obsDetail + ')</span>' : ''}`);
+      /* TAF line */
+      if(tafCat){
+        const tw = per.tafWorst || {};
+        let td = '';
+        if(tw.cig !== null && tw.cig !== undefined) td += 'cig ' + fmtCig(tw.cig);
+        if(tw.vis !== null && tw.vis !== undefined) td += (td?', ':'') + 'vis ' + visTxt(tw.visRaw ?? tw.vis);
+        lines.push(`<span style="font-size:10px;color:#92a7ba">TAF:</span> <span style="color:${tafCol};font-weight:700">${tafCat}</span>${td ? ' <span style="color:#92a7ba;font-size:10px">(' + td + ')</span>' : ''}`);
+        /* deterioration flag */
+        if(catRank[tafCat] !== undefined && catRank[obsCat] !== undefined && catRank[tafCat] > catRank[obsCat]){
+          lines.push(`<span style="color:${tafCol};font-weight:700;font-size:10.5px">⚠ ${tafCat} forecast — hold/cancel risk</span>`);
+        }
+      } else {
+        lines.push('<span style="color:#5b6c7d;font-size:10px">No TAF</span>');
+      }
+      return lines;
+    }
+
     /* draw corridor lines (subtle, behind station dots) */
     const drawn = new Set();
     corr.forEach(c=>{
@@ -6200,72 +6244,60 @@ function renderBoard(){
       if(c.cat !== c.now.cat){
         L.polyline(coords, {color: catHex(c.cat), weight: 2, opacity: 0.4, dashArray: '6 4'}).addTo(layers);
       }
-      /* destination marker with real weather + TAF tooltip */
+      /* split-circle station marker */
       const dPer = (window.lastPer||{})[c.dest] || {};
-      const dObs = dPer.obs || {};
-      const tipLines = [`<b>${ds.name}</b> <span style="color:${nowCol}">${c.now.cat}</span>`];
-      if(dObs.cig !== undefined && dObs.cig !== null) tipLines.push('Cig ' + fmtCig(dObs.cig));
-      else tipLines.push('Cig n/a');
-      if(dObs.vis !== undefined && dObs.vis !== null) tipLines.push('Vis ' + visTxt(dObs.visRaw ?? dObs.vis) + ' sm');
-      if(dObs.wspd !== undefined) tipLines.push('Wind ' + (dObs.wdir !== null && dObs.wdir !== undefined ? dObs.wdir + '°' : 'VRB') + ' ' + (dObs.wspd||0) + (dObs.wgst ? 'G' + dObs.wgst : '') + ' kt');
-      /* TAF forecast line */
-      if(dPer.tafCat && dPer.tafCat !== 'NA'){
-        const tw = dPer.tafWorst || {};
-        const tafCol = catHex(dPer.tafCat);
-        let tafDetail = '';
-        if(tw.cig !== null && tw.cig !== undefined) tafDetail += 'cig ' + fmtCig(tw.cig);
-        if(tw.vis !== null && tw.vis !== undefined) tafDetail += (tafDetail ? ', ' : '') + 'vis ' + visTxt(tw.visRaw ?? tw.vis) + ' sm';
-        tipLines.push(`<span style="color:#92a7ba;font-size:10.5px">TAF worst:</span> <span style="color:${tafCol};font-weight:700">${dPer.tafCat}</span>${tafDetail ? ' <span style="color:#92a7ba;font-size:10.5px">(' + tafDetail + ')</span>' : ''}`);
-      } else {
-        tipLines.push('<span style="color:#5b6c7d;font-size:10.5px">No TAF</span>');
-      }
-      /* pick tooltip direction based on station position to avoid clipping */
+      const obsCat = dPer.obsCat || c.now.cat || 'NA';
+      const tafCat = (dPer.tafCat && dPer.tafCat !== 'NA') ? dPer.tafCat : null;
+      const dotSz = 16;
       const tipDir = ds.lat > 59 ? 'bottom' : ds.lat < 55.5 ? 'top' : ds.lon < -136 ? 'right' : 'top';
-      L.circleMarker([ds.lat, ds.lon], {
-        radius: 6, fillColor: nowCol, fillOpacity: 0.95, color: '#0e141b', weight: 2
-      }).bindTooltip(tipLines.join('<br>'), {
+      L.marker([ds.lat, ds.lon], {
+        icon: L.divIcon({
+          className: '',
+          html: splitDotSvg(catHex(obsCat), tafCat ? catHex(tafCat) : noTafCol, dotSz),
+          iconSize: [dotSz, dotSz], iconAnchor: [dotSz/2, dotSz/2]
+        })
+      }).bindTooltip(stnTipLines(ds.name, dPer).join('<br>'), {
         permanent: false, direction: tipDir, className: 'corrmap-tip',
-        offset: [0, tipDir==='bottom' ? 8 : -8]
+        offset: [0, tipDir==='bottom' ? 10 : -10]
       }).addTo(layers);
     });
-    /* JNU hub marker with weather */
+
+    /* JNU hub marker: same split circle, larger */
     const jnuPer = (window.lastPer||{})['PAJN'] || {};
-    const jnuObs = jnuPer.obs || {};
-    const jnuCol = catHex(jnuPer.obsCat || 'NA');
-    const jnuTip = [`<b>Juneau</b> <span style="color:${jnuCol}">${jnuPer.obsCat||'N/A'}</span>`];
-    if(jnuObs.cig !== undefined && jnuObs.cig !== null) jnuTip.push('Cig ' + fmtCig(jnuObs.cig));
-    if(jnuObs.vis !== undefined && jnuObs.vis !== null) jnuTip.push('Vis ' + visTxt(jnuObs.visRaw ?? jnuObs.vis) + ' sm');
-    if(jnuObs.wspd !== undefined) jnuTip.push('Wind ' + (jnuObs.wdir !== null && jnuObs.wdir !== undefined ? jnuObs.wdir + '°' : 'VRB') + ' ' + (jnuObs.wspd||0) + (jnuObs.wgst ? 'G' + jnuObs.wgst : '') + ' kt');
-    if(jnuPer.tafCat && jnuPer.tafCat !== 'NA'){
-      const jtw = jnuPer.tafWorst || {};
-      let jtd = '';
-      if(jtw.cig !== null && jtw.cig !== undefined) jtd += 'cig ' + fmtCig(jtw.cig);
-      if(jtw.vis !== null && jtw.vis !== undefined) jtd += (jtd ? ', ' : '') + 'vis ' + visTxt(jtw.visRaw ?? jtw.vis) + ' sm';
-      jnuTip.push(`<span style="color:#92a7ba;font-size:10.5px">TAF worst:</span> <span style="color:${catHex(jnuPer.tafCat)};font-weight:700">${jnuPer.tafCat}</span>${jtd ? ' <span style="color:#92a7ba;font-size:10.5px">(' + jtd + ')</span>' : ''}`);
-    }
-    L.circleMarker([jnu.lat, jnu.lon], {
-      radius: 9, fillColor: '#f2a93b', fillOpacity: 1, color: '#0e141b', weight: 2.5
+    const jnuObsCat = jnuPer.obsCat || 'NA';
+    const jnuTafCat = (jnuPer.tafCat && jnuPer.tafCat !== 'NA') ? jnuPer.tafCat : null;
+    const jnuSz = 22;
+    L.marker([jnu.lat, jnu.lon], {
+      icon: L.divIcon({
+        className: '',
+        html: splitDotSvg(catHex(jnuObsCat), jnuTafCat ? catHex(jnuTafCat) : noTafCol, jnuSz),
+        iconSize: [jnuSz, jnuSz], iconAnchor: [jnuSz/2, jnuSz/2]
+      })
     }).bindTooltip('JNU', {
       permanent: true, direction: 'top', className: 'corrmap-hub',
-      offset: [0, -12]
-    }).on('click', function(){ this.unbindTooltip(); this.bindTooltip(jnuTip.join('<br>'), {permanent:false, direction:'bottom', className:'corrmap-tip', offset:[0,10]}); this.openTooltip(); })
-    .addTo(layers);
+      offset: [0, -14]
+    }).on('click', function(){
+      this.unbindTooltip();
+      this.bindTooltip(stnTipLines('Juneau', jnuPer).join('<br>'), {
+        permanent: false, direction: 'bottom', className: 'corrmap-tip', offset: [0, 12]
+      });
+      this.openTooltip();
+    }).addTo(layers);
 
     /* legend overlay */
     if(window._corrLegend){ window._corrLegend.remove(); window._corrLegend = null; }
     const leg = L.control({position:'bottomleft'});
     leg.onAdd = function(){
       const d = L.DomUtil.create('div','corrmap-legend');
-      d.innerHTML = '<b style="font-size:11px;margin-bottom:4px;display:block">Corridor Cat</b>'
+      d.innerHTML = '<b style="font-size:11px;margin-bottom:4px;display:block">Flight Category</b>'
         + ['VFR','MVFR','IFR','LIFR'].map(c2=>
           `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:11px">${c2}</span></span>`
         ).join('')
-        + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:4px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">forecast change</span></span>'
+        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Station Dot</b>'
+        + `<span style="display:inline-flex;align-items:center;gap:6px">${splitDotSvg('#46c17a','#e2574b',18)}<span style="font-size:10.5px">left = OBS now, right = TAF fcst</span></span>`
+        + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">corridor forecast change</span></span>'
         + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Zone (current worst)</b>'
-        + ['VFR','MVFR','IFR','LIFR'].map(c3=>
-          `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c3)};opacity:0.6;display:inline-block"></span><span style="font-size:11px">${c3}</span></span>`
-        ).join('')
-        + '<br><span style="font-size:10px;color:#92a7ba">click zone for full brief</span>';
+        + '<span style="font-size:10px;color:#92a7ba">click zone for full brief</span>';
       return d;
     };
     leg.addTo(map);
@@ -7297,7 +7329,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b272-zone-brief';
+const BUILD_TAG = 'b273-split-dot';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
