@@ -6218,34 +6218,63 @@ function renderBoard(){
     }
 
     /* build tooltip lines for any station */
-    function stnTipLines(name, per){
+    /* short hover label: name + category badges */
+    function stnHoverTip(name, per){
+      const obsCat = per.obsCat || 'NA';
+      const tafCat = (per.tafCat && per.tafCat !== 'NA') ? per.tafCat : null;
+      let h = `<b>${name}</b> <span style="color:${catHex(obsCat)};font-weight:700">${obsCat}</span>`;
+      if(tafCat) h += ` / <span style="color:${catHex(tafCat)};font-weight:700">${tafCat}</span>`;
+      if(tafCat && catRank[tafCat] > catRank[obsCat]) h += ` <span style="color:${catHex(tafCat)}">&#9888;</span>`;
+      return h;
+    }
+
+    /* full click popup: raw METAR, MADIS, TAF */
+    function stnPopupHtml(icao, name, per){
       const obs = per.obs || {};
       const obsCat = per.obsCat || 'NA';
-      const obsCol = catHex(obsCat);
       const tafCat = (per.tafCat && per.tafCat !== 'NA') ? per.tafCat : null;
       const tafCol = tafCat ? catHex(tafCat) : null;
-      const lines = [`<b>${name}</b>`];
-      /* current obs line */
-      let obsDetail = '';
-      if(obs.cig !== null && obs.cig !== undefined) obsDetail += 'cig ' + fmtCig(obs.cig);
-      if(obs.vis !== null && obs.vis !== undefined) obsDetail += (obsDetail?', ':'') + 'vis ' + visTxt(obs.visRaw ?? obs.vis);
-      if(obs.wspd !== undefined) obsDetail += (obsDetail?', ':'') + (obs.wdir !== null && obs.wdir !== undefined ? obs.wdir + '°' : 'VRB') + ' ' + (obs.wspd||0) + (obs.wgst ? 'G' + obs.wgst : '') + 'kt';
-      lines.push(`<span style="font-size:10px;color:#92a7ba">OBS:</span> <span style="color:${obsCol};font-weight:700">${obsCat}</span>${obsDetail ? ' <span style="color:#92a7ba;font-size:10px">(' + obsDetail + ')</span>' : ''}`);
-      /* TAF line */
-      if(tafCat){
-        const tw = per.tafWorst || {};
-        let td = '';
-        if(tw.cig !== null && tw.cig !== undefined) td += 'cig ' + fmtCig(tw.cig);
-        if(tw.vis !== null && tw.vis !== undefined) td += (td?', ':'') + 'vis ' + visTxt(tw.visRaw ?? tw.vis);
-        lines.push(`<span style="font-size:10px;color:#92a7ba">TAF:</span> <span style="color:${tafCol};font-weight:700">${tafCat}</span>${td ? ' <span style="color:#92a7ba;font-size:10px">(' + td + ')</span>' : ''}`);
-        /* deterioration flag */
-        if(catRank[tafCat] !== undefined && catRank[obsCat] !== undefined && catRank[tafCat] > catRank[obsCat]){
-          lines.push(`<span style="color:${tafCol};font-weight:700;font-size:10.5px">⚠ ${tafCat} forecast — hold/cancel risk</span>`);
+      let html = `<div style="margin-bottom:6px"><b style="font-size:13px">${name}</b> <span style="color:#92a7ba;font-size:11px">${icao}</span></div>`;
+
+      /* METAR */
+      html += `<div style="margin-bottom:6px"><span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">METAR</span> <span style="color:${catHex(obsCat)};font-weight:700">${obsCat}</span>`;
+      if(obs.t) html += ` <span style="color:#6b7d8f;font-size:10px">${agoTxt(obs.t)}</span>`;
+      if(obs.raw) html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#c8d6e0;white-space:pre-wrap;margin-top:2px;line-height:1.3">${esc(obs.raw)}</div>`;
+      else html += `<div style="color:#5b6c7d;font-size:10.5px">No METAR</div>`;
+      html += `</div>`;
+
+      /* MADIS */
+      const md = state.madis && state.madis[icao];
+      if(md){
+        html += `<div style="margin-bottom:6px"><span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">MADIS</span>`;
+        if(md.valid) html += ` <span style="color:#6b7d8f;font-size:10px">${agoTxt(md.valid)}</span>`;
+        if(md.metar) html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#c8d6e0;white-space:pre-wrap;margin-top:2px;line-height:1.3">${esc(md.metar)}</div>`;
+        else {
+          let bits = [];
+          if(md.cig !== null) bits.push('cig ' + fmtCig(md.cig));
+          if(md.vis !== null) bits.push('vis ' + visTxt(md.vis) + ' sm');
+          if(md.sknt) bits.push((md.wdir !== null && md.wdir !== undefined ? md.wdir + '°' : 'VRB') + ' ' + md.sknt + (md.gust ? 'G' + md.gust : '') + 'kt');
+          html += `<div style="font-size:10.5px;color:#c8d6e0;margin-top:2px">${bits.join(', ') || 'data available'}</div>`;
         }
-      } else {
-        lines.push('<span style="color:#5b6c7d;font-size:10px">No TAF</span>');
+        html += `</div>`;
       }
-      return lines;
+
+      /* TAF */
+      const taf = state.tafs && state.tafs[icao];
+      if(taf && taf.rawTAF){
+        html += `<div style="margin-bottom:4px"><span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">TAF</span>`;
+        if(tafCat) html += ` <span style="color:${tafCol};font-weight:700">${tafCat}</span>`;
+        /* deterioration flag */
+        if(tafCat && catRank[tafCat] !== undefined && catRank[obsCat] !== undefined && catRank[tafCat] > catRank[obsCat]){
+          html += ` <span style="color:${tafCol};font-weight:700;font-size:10.5px">&#9888; hold/cancel risk</span>`;
+        }
+        html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#c8d6e0;white-space:pre-wrap;margin-top:2px;line-height:1.3">${esc(taf.rawTAF)}</div>`;
+        html += `</div>`;
+      } else {
+        html += `<div style="color:#5b6c7d;font-size:10.5px">No TAF</div>`;
+      }
+
+      return html;
     }
 
     /* draw corridor lines (subtle, behind station dots) */
@@ -6270,9 +6299,14 @@ function renderBoard(){
           html: splitDotSvg(catHex(obsCat), tafCat ? catHex(tafCat) : noTafCol, dotSz),
           iconSize: [dotSz, dotSz], iconAnchor: [dotSz/2, dotSz/2]
         })
-      }).bindTooltip(stnTipLines(ds.name, dPer).join('<br>'), {
+      }).bindTooltip(stnHoverTip(ds.name, dPer), {
         permanent: false, direction: tipDir, className: 'corrmap-tip',
         offset: [0, tipDir==='bottom' ? 10 : -10]
+      }).on('click', function(e){
+        L.popup({maxWidth: 420, minWidth: 260, className: ''})
+          .setLatLng(e.latlng)
+          .setContent(stnPopupHtml(c.dest, ds.name, dPer))
+          .openOn(map);
       }).addTo(layers);
     });
 
@@ -6290,12 +6324,11 @@ function renderBoard(){
     }).bindTooltip('JNU', {
       permanent: true, direction: 'top', className: 'corrmap-hub',
       offset: [0, -14]
-    }).on('click', function(){
-      this.unbindTooltip();
-      this.bindTooltip(stnTipLines('Juneau', jnuPer).join('<br>'), {
-        permanent: false, direction: 'bottom', className: 'corrmap-tip', offset: [0, 12]
-      });
-      this.openTooltip();
+    }).on('click', function(e){
+      L.popup({maxWidth: 420, minWidth: 280, className: ''})
+        .setLatLng(e.latlng)
+        .setContent(stnPopupHtml('PAJN', 'Juneau', jnuPer))
+        .openOn(map);
     }).addTo(layers);
 
     /* legend overlay */
@@ -6308,7 +6341,8 @@ function renderBoard(){
           `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:11px">${c2}</span></span>`
         ).join('')
         + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Station Dot</b>'
-        + `<span style="display:inline-flex;align-items:center;gap:6px">${splitDotSvg('#46c17a','#e2574b',18)}<span style="font-size:10.5px">left = OBS now, right = TAF fcst</span></span>`
+        + `<span style="display:inline-flex;align-items:center;gap:6px">${splitDotSvg('#46c17a','#e2574b',18)}<span style="font-size:10.5px">left = OBS, right = TAF</span></span>`
+        + '<br><span style="font-size:10px;color:#92a7ba">click station for full METAR/TAF</span>'
         + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">corridor forecast change</span></span>'
         + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Zone (FA forecast)</b>'
         + '<span style="font-size:10px;color:#92a7ba">click zone for full brief</span>';
@@ -7343,7 +7377,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b276-fa-vfr-default';
+const BUILD_TAG = 'b277-stn-popup';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
