@@ -6,6 +6,8 @@
 <title>AKS Panhandle Weather Brief</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
 :root{
   --bg:#0e141b; --panel:#161f2a; --panel2:#1c2836; --line:#263649; --ink:#e9f0f6; --mut:#92a7ba;
@@ -88,6 +90,12 @@ label{color:var(--mut);font-size:13px}
 .pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;color:#0c1116}
 .pill.ok{background:var(--vfr)} .pill.caution{background:var(--amber);color:#1a1200} .pill.over{background:var(--ifr)} .pill.na{background:var(--na)}
 .pill.appr{background:#e67e22;color:#1a0e00}
+.corrmap-tip{background:#161f2a!important;color:#e9f0f6!important;border:1px solid #263649!important;font-family:'Barlow',sans-serif!important;font-size:12px!important;font-weight:600!important;padding:3px 8px!important;border-radius:4px!important;box-shadow:0 2px 8px rgba(0,0,0,.5)!important}
+.corrmap-tip::before{border-top-color:#263649!important}
+.corrmap-hub{background:transparent!important;border:none!important;box-shadow:none!important;color:#f2a93b!important;font-family:'Barlow Condensed',sans-serif!important;font-size:14px!important;font-weight:700!important;letter-spacing:1px!important}
+.corrmap-hub::before{display:none!important}
+.corrmap-legend{background:rgba(22,31,42,.92);padding:8px 12px;border-radius:6px;border:1px solid #263649;color:#e9f0f6;font-family:'Barlow',sans-serif;line-height:1.6}
+.leaflet-container{background:#0e141b!important;font-family:'Barlow',sans-serif!important}
 /* limits modal */
 #modalBg{position:fixed;inset:0;background:rgba(4,8,12,.72);z-index:50;display:none}
 #modal{position:fixed;z-index:51;top:4vh;left:50%;transform:translateX(-50%);width:min(860px,94vw);max-height:90vh;overflow-y:auto;background:var(--panel);border:1px solid var(--amber);border-radius:12px;padding:18px 20px;display:none}
@@ -848,7 +856,7 @@ body.kiosk #camWrap{columns:560px 3}
     <h2>Enroute from Juneau</h2>
     <div class="note" style="margin:0 0 8px">Worst conditions along each corridor from current METAR, MADIS 5 minute obs, and TAF groups in the selected window. All departures start in central southeast.</div>
     <div class="note" style="margin:0 0 8px;font-size:11px">VFR: cig above 3,000 ft and vis above 5 sm · MVFR: cig 1,000-3,000 ft and/or vis 3-5 sm · IFR: cig 500-999 ft and/or vis 1-3 sm · LIFR: below 500 ft / 1 sm</div>
-    <div id="corrmap"></div>
+    <div id="corrmap" style="height:480px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px;position:relative;z-index:0"></div>
     <div id="enroute"></div>
   </div>
 
@@ -5978,58 +5986,84 @@ function renderBoard(){
       + corrSection('TAF \u00b7 full decoded forecast', corrTafBlock(c.via, c))
       + corrSection('AREA FORECAST ZONES \u00b7 verbatim', corrZoneBlock(c.zones, c))};
   });
-  /* ---- corridor map: JNU hub with lines to each destination, color by worst cat ---- */
+  /* ---- corridor map: interactive Leaflet map with corridor lines ---- */
   const corrMapEl = document.getElementById('corrmap');
-  if(corrMapEl){
+  if(corrMapEl && typeof L !== 'undefined'){
     const stnMap = {}; STATIONS.forEach(s=>{ stnMap[s.icao] = s; });
-    /* project lat/lon to SVG coords using simple Mercator within the SE AK box */
-    const latMin = 54.8, latMax = 60.0, lonMin = -140.5, lonMax = -130.5;
-    const svgW = 440, svgH = 340, pad = 36;
-    const proj = (lat, lon) => {
-      const x = pad + ((lon - lonMin) / (lonMax - lonMin)) * (svgW - 2*pad);
-      const y = pad + (1 - (lat - latMin) / (latMax - latMin)) * (svgH - 2*pad);
-      return [x, y];
-    };
+    const catHex = c => c==='VFR'?'#46c17a':c==='MVFR'?'#4da3e8':c==='IFR'?'#e2574b':c==='LIFR'?'#c964dd':'#5b6c7d';
     const jnu = stnMap['PAJN'];
-    const [jx, jy] = proj(jnu.lat, jnu.lon);
-    const catColor = c => c==='VFR'?'var(--vfr)':c==='MVFR'?'var(--mvfr)':c==='IFR'?'var(--ifr)':c==='LIFR'?'var(--lifr)':'var(--na)';
-    /* only draw lines to distinct destinations, skip sub-corridors that share a dest with a longer route */
+
+    /* init or update: keep map instance across refreshes so zoom/pan persists */
+    if(!window._corrMap){
+      window._corrMap = L.map(corrMapEl, {
+        center: [57.8, -134.8],
+        zoom: 7,
+        zoomControl: true,
+        attributionControl: false,
+        maxBounds: [[54, -142],[61, -129]],
+        maxBoundsViscosity: 0.8
+      });
+      /* dark aviation-friendly tile layer */
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        subdomains: 'abcd',
+        maxZoom: 13,
+        minZoom: 5
+      }).addTo(window._corrMap);
+      /* compact attribution in corner */
+      L.control.attribution({position:'bottomright', prefix:false})
+        .addAttribution('© <a href="https://carto.com">CARTO</a> © <a href="https://osm.org">OSM</a>')
+        .addTo(window._corrMap);
+      window._corrLayers = L.layerGroup().addTo(window._corrMap);
+    }
+    const map = window._corrMap;
+    const layers = window._corrLayers;
+    layers.clearLayers();
+
+    /* draw corridor lines */
     const drawn = new Set();
-    let lines = '', dots = '', labels = '';
     corr.forEach(c=>{
       const ds = stnMap[c.dest]; if(!ds || drawn.has(c.dest)) return; drawn.add(c.dest);
-      const [dx, dy] = proj(ds.lat, ds.lon);
-      const col = catColor(c.cat);
-      const nowCol = catColor(c.now.cat);
-      /* route line - use now color solid, with a dashed overlay if forecast is worse */
-      lines += `<line x1="${jx}" y1="${jy}" x2="${dx}" y2="${dy}" stroke="${nowCol}" stroke-width="2.5" stroke-opacity="0.7" stroke-linecap="round"/>`;
+      const nowCol = catHex(c.now.cat);
+      const coords = [[jnu.lat, jnu.lon],[ds.lat, ds.lon]];
+      /* solid line for current conditions */
+      L.polyline(coords, {color: nowCol, weight: 3.5, opacity: 0.8}).addTo(layers);
+      /* dashed overlay if forecast is worse */
       if(c.cat !== c.now.cat){
-        lines += `<line x1="${jx}" y1="${jy}" x2="${dx}" y2="${dy}" stroke="${col}" stroke-width="2.5" stroke-opacity="0.5" stroke-dasharray="6 4" stroke-linecap="round"/>`;
+        L.polyline(coords, {color: catHex(c.cat), weight: 3.5, opacity: 0.6, dashArray: '8 5'}).addTo(layers);
       }
-      /* destination dot */
-      dots += `<circle cx="${dx}" cy="${dy}" r="4.5" fill="${nowCol}" stroke="#0e141b" stroke-width="1.5"/>`;
-      /* label with smart offset to avoid overlap with the line */
-      const ang = Math.atan2(dy - jy, dx - jx);
-      const lx = dx + Math.cos(ang) * 10;
-      const ly = dy + Math.sin(ang) * 10;
-      const anchor = dx < jx ? 'end' : 'start';
-      const voff = dy < jy ? -3 : 11;
-      labels += `<text x="${lx}" y="${ly + voff}" fill="var(--ink)" font-family="var(--disp)" font-size="11" font-weight="600" text-anchor="${anchor}" letter-spacing=".5">${ds.name}</text>`;
+      /* destination marker */
+      L.circleMarker([ds.lat, ds.lon], {
+        radius: 6, fillColor: nowCol, fillOpacity: 0.95, color: '#0e141b', weight: 2
+      }).bindTooltip(ds.name + ' (' + c.now.cat + ')', {
+        permanent: false, direction: 'top', className: 'corrmap-tip',
+        offset: [0, -8]
+      }).addTo(layers);
     });
-    /* JNU hub dot */
-    const hub = `<circle cx="${jx}" cy="${jy}" r="7" fill="var(--amber)" stroke="#0e141b" stroke-width="2"/>
-      <text x="${jx}" y="${jy - 11}" fill="var(--amber)" font-family="var(--disp)" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="1">JNU</text>`;
-    /* legend */
-    const legend = ['VFR','MVFR','IFR','LIFR'].map((c2, i) =>
-      `<rect x="${svgW - 135}" y="${svgH - 56 + i*13}" width="10" height="10" rx="2" fill="${catColor(c2)}"/>
-       <text x="${svgW - 121}" y="${svgH - 47 + i*13}" fill="var(--mut)" font-family="var(--body)" font-size="10">${c2}</text>`
-    ).join('');
-    const dashNote = `<line x1="${svgW - 135}" y1="${svgH - 62}" x2="${svgW - 115}" y2="${svgH - 62}" stroke="var(--mut)" stroke-width="2" stroke-dasharray="4 3"/>
-      <text x="${svgW - 111}" y="${svgH - 58}" fill="var(--mut)" font-family="var(--body)" font-size="9">forecast change</text>`;
+    /* JNU hub marker */
+    L.circleMarker([jnu.lat, jnu.lon], {
+      radius: 9, fillColor: '#f2a93b', fillOpacity: 1, color: '#0e141b', weight: 2.5
+    }).bindTooltip('JNU', {
+      permanent: true, direction: 'top', className: 'corrmap-hub',
+      offset: [0, -12]
+    }).addTo(layers);
 
-    corrMapEl.innerHTML = `<svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%;max-width:${svgW}px;height:auto;display:block;margin:0 auto 12px">
-      ${lines}${dots}${hub}${labels}${legend}${dashNote}
-    </svg>`;
+    /* legend overlay */
+    if(!window._corrLegend){
+      const leg = L.control({position:'bottomleft'});
+      leg.onAdd = function(){
+        const d = L.DomUtil.create('div','corrmap-legend');
+        d.innerHTML = '<b style="font-size:11px;margin-bottom:4px;display:block">Corridor Cat</b>'
+          + ['VFR','MVFR','IFR','LIFR'].map(c2=>
+            `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:11px">${c2}</span></span>`
+          ).join('')
+          + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:4px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">forecast change</span></span>';
+        return d;
+      };
+      leg.addTo(map);
+      window._corrLegend = leg;
+    }
+    /* force Leaflet to recalc tiles after container might have been hidden */
+    setTimeout(()=> map.invalidateSize(), 200);
   }
 
   document.getElementById('enroute').innerHTML = `<table>
@@ -7053,7 +7087,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b264-wind-tiers';
+const BUILD_TAG = 'b265-leaflet-map';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
