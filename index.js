@@ -87,9 +87,9 @@ label{color:var(--mut);font-size:13px}
 .ext h3{font-family:var(--disp);font-size:16px;font-weight:600;letter-spacing:.5px;display:flex;justify-content:space-between;align-items:center;gap:6px}
 .ext .wind{font-family:var(--disp);font-weight:700;font-size:26px;line-height:1.1}
 .ext .meta{color:var(--mut);font-size:11.5px;margin-top:2px}
-.pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;color:#0c1116}
-.pill.ok{background:var(--vfr)} .pill.caution{background:var(--amber);color:#1a1200} .pill.over{background:var(--ifr)} .pill.na{background:var(--na)}
-.pill.appr{background:#e67e22;color:#1a0e00}
+.pill{font-size:11px;font-weight:700;padding:3px 10px;border-radius:12px;color:#0c1116;white-space:nowrap}
+.pill.ok{background:#46c17a} .pill.caution{background:#f2a93b;color:#1a1200} .pill.over{background:#e2574b;color:#fff} .pill.na{background:#5b6c7d;color:#c8d4de}
+.pill.appr{background:#e67e22;color:#fff}
 .corrmap-tip{background:#161f2a!important;color:#e9f0f6!important;border:1px solid #263649!important;font-family:'Barlow',sans-serif!important;font-size:12px!important;font-weight:600!important;padding:3px 8px!important;border-radius:4px!important;box-shadow:0 2px 8px rgba(0,0,0,.5)!important}
 .corrmap-tip::before{border-top-color:#263649!important}
 .corrmap-hub{background:transparent!important;border:none!important;box-shadow:none!important;color:#f2a93b!important;font-family:'Barlow Condensed',sans-serif!important;font-size:14px!important;font-weight:700!important;letter-spacing:1px!important}
@@ -7087,7 +7087,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b265-leaflet-map';
+const BUILD_TAG = 'b266-pill-fix';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
