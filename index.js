@@ -6040,26 +6040,27 @@ function renderBoard(){
     /* Gulf Coast quad is not in QUADS array but is in QUAD_ZONES */
     if(!ZONE_STNS['JE']){ ZONE_STNS['JE'] = STATIONS.filter(s=>s.quad==='Gulf Coast').map(s=>s.icao); }
 
-    /* determine zone color from worst CURRENT obs at stations in the zone */
+    /* determine zone color from lowest cig/vis in the AREA FORECAST text */
     const catRank = {VFR:0, MVFR:1, IFR:2, LIFR:3};
-    function zoneCurrentCat(zid){
-      const stns = ZONE_STNS[zid] || [];
-      const per = window.lastPer || {};
-      let worst = -1, worstCat = 'NA';
-      stns.forEach(icao => {
-        const p = per[icao];
-        if(p && p.obsCat && catRank[p.obsCat] !== undefined){
-          if(catRank[p.obsCat] > worst){ worst = catRank[p.obsCat]; worstCat = p.obsCat; }
-        }
-      });
-      return worstCat;
+    function cigVisToCat(cig, vis){
+      /* standard ICAO flight category from ceiling (ft AGL) and visibility (SM) */
+      if((cig !== null && cig < 500) || (vis !== null && vis < 1)) return 'LIFR';
+      if((cig !== null && cig < 1000) || (vis !== null && vis < 3)) return 'IFR';
+      if((cig !== null && cig < 3000) || (vis !== null && vis <= 5)) return 'MVFR';
+      if(cig !== null || vis !== null) return 'VFR';
+      return 'NA';
+    }
+    function zoneFaCat(zid){
+      const z = (state.fa||{}).zones && state.fa.zones[zid];
+      if(!z) return 'NA';
+      return cigVisToCat(z.minCig, z.minVis);
     }
 
     /* build full FA brief HTML for zone popup */
     function zoneBriefHtml(zid){
       const zData = (state.fa||{}).zones && state.fa.zones[zid];
-      const cat = zoneCurrentCat(zid);
-      const col = catHex(cat);
+      const faCat = zoneFaCat(zid);
+      const faCol = catHex(faCat);
       const townList = FA_PLAIN[zid]||'';
       const zoneName = (FA_ZONES[zid]||zid).replace(' and ',' & ');
 
@@ -6080,14 +6081,22 @@ function renderBoard(){
 
       let html = `<div style="margin-bottom:8px"><b style="font-size:13px">${zid}: ${zoneName}</b>`;
       if(townList) html += `<br><span style="color:#92a7ba;font-size:10.5px">${townList}</span>`;
-      html += `<br><span style="font-size:12px">Current worst: </span><span style="color:${col};font-weight:700;font-size:13px">${cat}</span>`;
+      /* FA forecast category */
+      let faDet = '';
+      if(zData){
+        if(zData.minCig !== null) faDet += 'cig ' + fmtCig(zData.minCig);
+        if(zData.minVis !== null) faDet += (faDet?', ':'') + 'vis ' + (zData.visRaw || zData.minVis) + ' sm';
+      }
+      html += `<br><span style="font-size:12px">FA forecast: </span><span style="color:${faCol};font-weight:700;font-size:13px">${faCat}</span>`;
+      if(faDet) html += ` <span style="color:#92a7ba;font-size:10.5px">(${faDet})</span>`;
       html += `</div>`;
 
-      /* station breakdown */
+      /* station breakdown - actual current obs */
       if(stnLines.length){
-        html += `<div style="margin-bottom:8px;border-left:2px solid ${col};padding-left:6px">`;
+        html += `<div style="margin-bottom:8px"><span style="color:#92a7ba;font-size:10px;letter-spacing:.5px">CURRENT OBS</span><br>`;
+        html += `<div style="border-left:2px solid ${faCol};padding-left:6px">`;
         html += stnLines.join('<br>');
-        html += `</div>`;
+        html += `</div></div>`;
       }
 
       /* FA brief text */
@@ -6155,17 +6164,17 @@ function renderBoard(){
     /* draw FA zone polygons first (underneath everything) */
     Object.keys(FA_ZONE_POLYS).forEach(zid=>{
       const pts = FA_ZONE_POLYS[zid];
-      const cat = zoneCurrentCat(zid);
+      const cat = zoneFaCat(zid);
       const col = catHex(cat);
       const zoneName = (FA_ZONES[zid]||zid).replace(' and ',' & ');
-      /* zone polygon colored by worst current obs */
+      /* zone polygon colored by FA forecast category */
       const poly = L.polygon(pts, {
         color: col, weight: 1.5, opacity: 0.7,
         fillColor: col, fillOpacity: 0.15,
         interactive: true
       });
-      /* simple hover tooltip */
-      poly.bindTooltip(`<b>${zid}: ${zoneName}</b><br><span style="color:${col};font-weight:700">${cat}</span> <span style="color:#92a7ba;font-size:10.5px">current worst</span>`, {
+      /* hover tooltip with click hint */
+      poly.bindTooltip(`<b>${zid}: ${zoneName}</b><br><span style="color:${col};font-weight:700">${cat}</span> <span style="color:#92a7ba;font-size:10.5px">FA forecast</span><br><span style="color:#6b7d8f;font-size:9.5px">click for full brief</span>`, {
         sticky: true, className: 'corrmap-tip', offset: [0, 0]
       });
       /* click opens full brief popup */
@@ -6296,7 +6305,7 @@ function renderBoard(){
         + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Station Dot</b>'
         + `<span style="display:inline-flex;align-items:center;gap:6px">${splitDotSvg('#46c17a','#e2574b',18)}<span style="font-size:10.5px">left = OBS now, right = TAF fcst</span></span>`
         + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">corridor forecast change</span></span>'
-        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Zone (current worst)</b>'
+        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Zone (FA forecast)</b>'
         + '<span style="font-size:10px;color:#92a7ba">click zone for full brief</span>';
       return d;
     };
@@ -7329,7 +7338,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b273-split-dot';
+const BUILD_TAG = 'b274-fa-zone-cat';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
