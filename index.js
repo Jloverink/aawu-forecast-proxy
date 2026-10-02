@@ -95,6 +95,8 @@ label{color:var(--mut);font-size:13px}
 .corrmap-hub{background:transparent!important;border:none!important;box-shadow:none!important;color:#f2a93b!important;font-family:'Barlow Condensed',sans-serif!important;font-size:14px!important;font-weight:700!important;letter-spacing:1px!important}
 .corrmap-hub::before{display:none!important}
 .corrmap-legend{background:rgba(22,31,42,.92);padding:8px 12px;border-radius:6px;border:1px solid #263649;color:#e9f0f6;font-family:'Barlow',sans-serif;line-height:1.6}
+.corrmap-zone-label{background:transparent!important;border:none!important;box-shadow:none!important;font-family:'Barlow Condensed',sans-serif!important;font-size:13px!important;font-weight:700!important;letter-spacing:0.5px!important;text-shadow:0 1px 4px rgba(0,0,0,.8)!important;pointer-events:none!important}
+.corrmap-zone-label::before{display:none!important}
 .leaflet-container{background:#0e141b!important;font-family:'Barlow',sans-serif!important}
 /* limits modal */
 #modalBg{position:fixed;inset:0;background:rgba(4,8,12,.72);z-index:50;display:none}
@@ -856,7 +858,7 @@ body.kiosk #camWrap{columns:560px 3}
     <h2>Enroute from Juneau</h2>
     <div class="note" style="margin:0 0 8px">Worst conditions along each corridor from current METAR, MADIS 5 minute obs, and TAF groups in the selected window. All departures start in central southeast.</div>
     <div class="note" style="margin:0 0 8px;font-size:11px">VFR: cig above 3,000 ft and vis above 5 sm · MVFR: cig 1,000-3,000 ft and/or vis 3-5 sm · IFR: cig 500-999 ft and/or vis 1-3 sm · LIFR: below 500 ft / 1 sm</div>
-    <div id="corrmap" style="height:300px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px;position:relative;z-index:0"></div>
+    <div id="corrmap" style="height:520px;border-radius:8px;border:1px solid var(--line);margin-bottom:12px;position:relative;z-index:0"></div>
     <div id="enroute"></div>
   </div>
 
@@ -5996,17 +5998,41 @@ function renderBoard(){
       + corrSection('TAF \u00b7 full decoded forecast', corrTafBlock(c.via, c))
       + corrSection('AREA FORECAST ZONES \u00b7 verbatim', corrZoneBlock(c.zones, c))};
   });
-  /* ---- corridor map: interactive Leaflet map with corridor lines ---- */
+  /* ---- corridor map: interactive Leaflet map with FA zones + corridors ---- */
   const corrMapEl = document.getElementById('corrmap');
   if(corrMapEl && typeof L !== 'undefined'){
     const stnMap = {}; STATIONS.forEach(s=>{ stnMap[s.icao] = s; });
     const catHex = c => c==='VFR'?'#46c17a':c==='MVFR'?'#4da3e8':c==='IFR'?'#e2574b':c==='LIFR'?'#c964dd':'#5b6c7d';
     const jnu = stnMap['PAJN'];
 
+    /* approximate FA zone polygons for SE Alaska */
+    const FA_ZONE_POLYS = {
+      JE: [[60.3,-141.8],[60.3,-138.2],[59.7,-137.8],[59.2,-138.5],[58.8,-139.2],[59.0,-140.5],[59.5,-141.8]],
+      JB: [[59.7,-137.8],[59.5,-135.8],[59.2,-134.6],[58.8,-134.2],[58.2,-134.8],[58.2,-135.8],[58.5,-136.8],[59.2,-138.5]],
+      JC: [[58.2,-134.8],[58.8,-134.2],[58.5,-133.0],[57.8,-132.8],[57.0,-133.2],[56.8,-134.0],[57.0,-135.5],[57.5,-136.2],[58.2,-135.8]],
+      JD: [[57.0,-135.5],[56.8,-134.0],[57.0,-133.2],[56.5,-132.0],[56.0,-131.5],[55.5,-131.0],[55.0,-130.8],[54.6,-131.5],[54.8,-132.8],[55.3,-133.5],[55.5,-134.8],[56.0,-136.0]],
+      JF: [[60.3,-141.8],[59.5,-141.8],[59.0,-140.5],[58.8,-139.2],[58.5,-136.8],[57.5,-136.2],[57.0,-135.5],[56.0,-136.0],[55.5,-136.5],[55.0,-137.0],[54.5,-137.5],[54.5,-141.8]]
+    };
+
+    /* determine zone condition color from FA data */
+    function zoneCondColor(zid){
+      const z = (state.fa||{}).zones && state.fa.zones[zid];
+      if(!z) return {fill:'#5b6c7d', border:'#5b6c7d', label:'N/A'};
+      const txt = (z.airmets||[]).join(' ').toUpperCase();
+      const hasIFR = txt.includes('IFR') || txt.includes('LIFR');
+      const hasMTN = txt.includes('MT OBSC') || txt.includes('MTNS OBSC') || txt.includes('MTS OBSC');
+      const hasFZ  = txt.includes('FZRA') || txt.includes('FZDZ');
+      if(hasIFR) return {fill:'#e2574b', border:'#e2574b', label:'IFR AIRMET'};
+      if(hasMTN) return {fill:'#f2a93b', border:'#f2a93b', label:'MTN OBSC'};
+      if(hasFZ)  return {fill:'#c964dd', border:'#c964dd', label:'FZRA'};
+      if(txt.includes('AIRMET')) return {fill:'#4da3e8', border:'#4da3e8', label:'AIRMET'};
+      return {fill:'#46c17a', border:'#3a9960', label:'OK'};
+    }
+
     /* init or update: keep map instance across refreshes so zoom/pan persists */
     if(!window._corrMap){
       window._corrMap = L.map(corrMapEl, {
-        center: [57.8, -134.8],
+        center: [57.5, -135.2],
         zoom: 7,
         zoomControl: true,
         attributionControl: false,
@@ -6015,15 +6041,11 @@ function renderBoard(){
       });
       /* dark basemap - Esri dark gray (free, no API key) */
       L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 13,
-        minZoom: 5
+        maxZoom: 13, minZoom: 5
       }).addTo(window._corrMap);
-      /* reference labels on top */
       L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
-        maxZoom: 13,
-        minZoom: 5
+        maxZoom: 13, minZoom: 5
       }).addTo(window._corrMap);
-      /* compact attribution */
       L.control.attribution({position:'bottomright', prefix:false})
         .addAttribution('© Esri, HERE, Garmin, NGA')
         .addTo(window._corrMap);
@@ -6033,17 +6055,53 @@ function renderBoard(){
     const layers = window._corrLayers;
     layers.clearLayers();
 
-    /* draw corridor lines */
+    /* draw FA zone polygons first (underneath everything) */
+    Object.keys(FA_ZONE_POLYS).forEach(zid=>{
+      const pts = FA_ZONE_POLYS[zid];
+      const cond = zoneCondColor(zid);
+      const zData = (state.fa||{}).zones && state.fa.zones[zid];
+      const zoneName = (FA_ZONES[zid]||zid).replace(' and ',' & ');
+      const townList = FA_PLAIN[zid]||'';
+      /* zone polygon */
+      const poly = L.polygon(pts, {
+        color: cond.border, weight: 1.5, opacity: 0.7,
+        fillColor: cond.fill, fillOpacity: 0.12,
+        interactive: true
+      });
+      /* tooltip with zone summary */
+      const tipParts = [`<b>${zid}: ${zoneName}</b>`];
+      if(townList) tipParts.push(`<span style="color:#92a7ba;font-size:11px">${townList}</span>`);
+      tipParts.push(`<span style="color:${cond.fill};font-weight:700">${cond.label}</span>`);
+      if(zData && zData.airmets && zData.airmets.length){
+        zData.airmets.forEach(a=> tipParts.push(`<span style="font-size:10.5px;color:#e9f0f6">${a.slice(0,100)}</span>`));
+      }
+      poly.bindTooltip(tipParts.join('<br>'), {
+        sticky: true, className: 'corrmap-tip', offset: [0, 0]
+      });
+      poly.addTo(layers);
+
+      /* zone label at centroid */
+      const cLat = pts.reduce((s,p)=>s+p[0],0)/pts.length;
+      const cLon = pts.reduce((s,p)=>s+p[1],0)/pts.length;
+      L.marker([cLat, cLon], {
+        icon: L.divIcon({
+          className: 'corrmap-zone-label',
+          html: `<span style="color:${cond.fill};opacity:0.85">${zid}</span>`,
+          iconSize: [30, 16], iconAnchor: [15, 8]
+        }),
+        interactive: false
+      }).addTo(layers);
+    });
+
+    /* draw corridor lines (subtle, behind station dots) */
     const drawn = new Set();
     corr.forEach(c=>{
       const ds = stnMap[c.dest]; if(!ds || drawn.has(c.dest)) return; drawn.add(c.dest);
       const nowCol = catHex(c.now.cat);
       const coords = [[jnu.lat, jnu.lon],[ds.lat, ds.lon]];
-      /* solid line for current conditions */
-      L.polyline(coords, {color: nowCol, weight: 3.5, opacity: 0.8}).addTo(layers);
-      /* dashed overlay if forecast is worse */
+      L.polyline(coords, {color: nowCol, weight: 2, opacity: 0.45}).addTo(layers);
       if(c.cat !== c.now.cat){
-        L.polyline(coords, {color: catHex(c.cat), weight: 3.5, opacity: 0.6, dashArray: '8 5'}).addTo(layers);
+        L.polyline(coords, {color: catHex(c.cat), weight: 2, opacity: 0.4, dashArray: '6 4'}).addTo(layers);
       }
       /* destination marker with real weather tooltip */
       const dObs = ((window.lastPer||{})[c.dest]||{}).obs || {};
@@ -6068,20 +6126,24 @@ function renderBoard(){
     }).addTo(layers);
 
     /* legend overlay */
-    if(!window._corrLegend){
-      const leg = L.control({position:'bottomleft'});
-      leg.onAdd = function(){
-        const d = L.DomUtil.create('div','corrmap-legend');
-        d.innerHTML = '<b style="font-size:11px;margin-bottom:4px;display:block">Corridor Cat</b>'
-          + ['VFR','MVFR','IFR','LIFR'].map(c2=>
-            `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:11px">${c2}</span></span>`
-          ).join('')
-          + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:4px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">forecast change</span></span>';
-        return d;
-      };
-      leg.addTo(map);
-      window._corrLegend = leg;
-    }
+    if(window._corrLegend){ window._corrLegend.remove(); window._corrLegend = null; }
+    const leg = L.control({position:'bottomleft'});
+    leg.onAdd = function(){
+      const d = L.DomUtil.create('div','corrmap-legend');
+      d.innerHTML = '<b style="font-size:11px;margin-bottom:4px;display:block">Corridor Cat</b>'
+        + ['VFR','MVFR','IFR','LIFR'].map(c2=>
+          `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:11px">${c2}</span></span>`
+        ).join('')
+        + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:4px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">forecast change</span></span>'
+        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">FA Zone Fill</b>'
+        + [['#46c17a','OK'],['#f2a93b','MTN OBSC'],['#e2574b','IFR'],['#4da3e8','OTHER']].map(([col,lbl])=>
+          `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${col};opacity:0.6;display:inline-block"></span><span style="font-size:11px">${lbl}</span></span>`
+        ).join('');
+      return d;
+    };
+    leg.addTo(map);
+    window._corrLegend = leg;
+
     /* force Leaflet to recalc tiles after container might have been hidden */
     setTimeout(()=> map.invalidateSize(), 200);
   }
@@ -7108,7 +7170,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b268-notif-ts';
+const BUILD_TAG = 'b269-zone-map';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
