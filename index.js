@@ -6206,15 +6206,79 @@ function renderBoard(){
 
     /* split-circle SVG: left half = current obs, right half = TAF forecast */
     const noTafCol = '#3a4555';
-    function splitDotSvg(obsCol, tafCol, sz){
+    const STALE_MINUTES = 90;
+    function splitDotSvg(obsCol, tafCol, sz, opts){
       const r = sz/2 - 1.5;
       const cx = sz/2, cy = sz/2;
-      return `<svg width="${sz}" height="${sz}" xmlns="http://www.w3.org/2000/svg">`
-        + `<path d="M${cx},${cy-r} A${r},${r} 0 0,0 ${cx},${cy+r} Z" fill="${obsCol}"/>`
-        + `<path d="M${cx},${cy-r} A${r},${r} 0 0,1 ${cx},${cy+r} Z" fill="${tafCol}"/>`
-        + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#0e141b" stroke-width="2"/>`
-        + `<line x1="${cx}" y1="${cy-r+1}" x2="${cx}" y2="${cy+r-1}" stroke="#0e141b" stroke-width="1.2" opacity="0.7"/>`
-        + `</svg>`;
+      const stale = opts && opts.stale;
+      const wdir = opts && opts.wdir; // degrees true
+      const wspd = opts && opts.wspd; // knots
+      let svg = `<svg width="${sz+20}" height="${sz+20}" xmlns="http://www.w3.org/2000/svg">`;
+      const ox = 10, oy = 10; // offset for wind barb room
+      /* stale obs pulsing ring */
+      if(stale){
+        svg += `<circle cx="${ox+cx}" cy="${oy+cy}" r="${r+3}" fill="none" stroke="#ffaa00" stroke-width="1.5" opacity="0.7">`
+          + `<animate attributeName="opacity" values="0.7;0.2;0.7" dur="2s" repeatCount="indefinite"/>`
+          + `</circle>`;
+      }
+      svg += `<path d="M${ox+cx},${oy+cy-r} A${r},${r} 0 0,0 ${ox+cx},${oy+cy+r} Z" fill="${obsCol}"/>`
+        + `<path d="M${ox+cx},${oy+cy-r} A${r},${r} 0 0,1 ${ox+cx},${oy+cy+r} Z" fill="${tafCol}"/>`
+        + `<circle cx="${ox+cx}" cy="${oy+cy}" r="${r}" fill="none" stroke="#0e141b" stroke-width="2"/>`
+        + `<line x1="${ox+cx}" y1="${oy+cy-r+1}" x2="${ox+cx}" y2="${oy+cy+r-1}" stroke="#0e141b" stroke-width="1.2" opacity="0.7"/>`;
+      /* wind barb */
+      if(wdir !== null && wdir !== undefined && wspd !== null && wspd > 0){
+        svg += windBarbSvg(ox+cx, oy+cy, r+2, wdir, wspd);
+      }
+      svg += `</svg>`;
+      return svg;
+    }
+    /* wind barb: staff + flags/pennants from station dot edge toward wind direction */
+    function windBarbSvg(cx, cy, r, wdir, wspd){
+      const barbLen = 18;
+      const rad = (wdir - 90) * Math.PI / 180; // wind FROM direction
+      // staff goes from dot edge outward in the FROM direction
+      const sx = cx + r * Math.cos(rad);
+      const sy = cy + r * Math.sin(rad);
+      const ex = cx + (r + barbLen) * Math.cos(rad);
+      const ey = cy + (r + barbLen) * Math.sin(rad);
+      let barb = `<line x1="${sx.toFixed(1)}" y1="${sy.toFixed(1)}" x2="${ex.toFixed(1)}" y2="${ey.toFixed(1)}" stroke="#c8d6e0" stroke-width="1.5" stroke-linecap="round"/>`;
+      // feathers perpendicular to staff, on the left side (meteorological convention)
+      const perpRad = rad - Math.PI / 2;
+      let rem = Math.round(wspd / 5) * 5; // round to nearest 5
+      let pos = 0; // distance from tip
+      const feathLen = 7;
+      const feathGap = 3.5;
+      // 50kt pennants (triangles)
+      while(rem >= 50){
+        const px = ex - pos * Math.cos(rad);
+        const py = ey - pos * Math.sin(rad);
+        const px2 = ex - (pos + feathGap) * Math.cos(rad);
+        const py2 = ey - (pos + feathGap) * Math.sin(rad);
+        const tx = px + feathLen * Math.cos(perpRad);
+        const ty = py + feathLen * Math.sin(perpRad);
+        barb += `<polygon points="${px.toFixed(1)},${py.toFixed(1)} ${px2.toFixed(1)},${py2.toFixed(1)} ${tx.toFixed(1)},${ty.toFixed(1)}" fill="#c8d6e0"/>`;
+        pos += feathGap + 1;
+        rem -= 50;
+      }
+      // 10kt full barbs (long lines)
+      while(rem >= 10){
+        const px = ex - pos * Math.cos(rad);
+        const py = ey - pos * Math.sin(rad);
+        const tx = px + feathLen * Math.cos(perpRad);
+        const ty = py + feathLen * Math.sin(perpRad);
+        barb += `<line x1="${px.toFixed(1)}" y1="${py.toFixed(1)}" x2="${tx.toFixed(1)}" y2="${ty.toFixed(1)}" stroke="#c8d6e0" stroke-width="1.2"/>`;
+        pos += feathGap;
+        rem -= 10;
+      }
+      // 5kt half barb (short line)
+      if(rem >= 5){
+        const px = ex - pos * Math.cos(rad);
+        const py = ey - pos * Math.sin(rad);
+        const tx = px + feathLen * 0.5 * Math.cos(perpRad);
+        const ty = py + feathLen * 0.5 * Math.sin(perpRad);
+        barb += `<line x1="${px.toFixed(1)}" y1="${py.toFixed(1)}" x2="${tx.toFixed(1)}" y2="${ty.toFixed(1)}" stroke="#c8d6e0" stroke-width="1.2"/>`;
+      }
+      return barb;
     }
 
     /* build tooltip lines for any station */
@@ -6228,13 +6292,88 @@ function renderBoard(){
       return h;
     }
 
-    /* full click popup: raw METAR, MADIS, TAF */
+    /* TAF timeline bar: colored blocks for each forecast group */
+    function tafTimelineHtml(icao){
+      const taf = state.tafs && state.tafs[icao];
+      if(!taf || !(taf.fcsts||[]).length) return '';
+      const now = Date.now()/1000;
+      const t0 = taf.validTimeFrom || taf.fcsts[0].timeFrom;
+      const t1 = taf.validTimeTo || taf.fcsts[taf.fcsts.length-1].timeTo;
+      if(!t0 || !t1 || t1 <= t0) return '';
+      const span = t1 - t0;
+      const groups = taf.fcsts.slice().sort((a,b)=>(a.timeFrom||0)-(b.timeFrom||0));
+      const W = 340; // px width
+      let bars = '';
+      groups.forEach(f=>{
+        if(!f.timeFrom || !f.timeTo || f.timeTo <= f.timeFrom) return;
+        const left = Math.max(0, (f.timeFrom - t0) / span) * W;
+        const width = Math.min(1, (f.timeTo - t0) / span) * W - left;
+        if(width < 1) return;
+        const cig = ceilingOf(f.clouds, f.vertVis);
+        const vis = parseVis(f.visib);
+        const cat = flightCat(cig, vis);
+        const col = catHex(cat);
+        const isTempo = /TEMPO|PROB/i.test(f.fcstChange || '');
+        const inForce = f.timeFrom <= now && f.timeTo >= now;
+        const lbl = (f.fcstChange || 'FM').replace(/^FROM$/i,'FM');
+        const h = isTempo ? 10 : 14;
+        const y = isTempo ? 16 : 0;
+        bars += `<div style="position:absolute;left:${left.toFixed(1)}px;top:${y}px;width:${Math.max(2,width).toFixed(1)}px;height:${h}px;`
+          + `background:${col};opacity:${isTempo?0.5:0.7};border-radius:2px;`
+          + `${inForce?'box-shadow:0 0 4px '+col+';border:1px solid #e9f0f6;':'border:1px solid rgba(255,255,255,0.15);'}`
+          + `" title="${lbl} ${fmtLZ(f.timeFrom)}–${fmtLZ(f.timeTo)} ${cat}${f.wxString?' '+f.wxString:''}"></div>`;
+      });
+      /* now marker */
+      if(now >= t0 && now <= t1){
+        const nowX = ((now - t0) / span) * W;
+        bars += `<div style="position:absolute;left:${nowX.toFixed(1)}px;top:0;width:1px;height:28px;background:#e9f0f6;opacity:0.9"></div>`;
+      }
+      /* time labels */
+      const hrs = Math.round(span / 3600);
+      const step = hrs <= 12 ? 3 : 6;
+      let ticks = '';
+      for(let h=0; h<=hrs; h+=step){
+        const x = (h / (span/3600)) * W;
+        ticks += `<span style="position:absolute;left:${x.toFixed(1)}px;top:30px;font-size:9px;color:#6b7d8f;transform:translateX(-50%)">${fmtLZ(t0 + h*3600)}</span>`;
+      }
+      return `<div style="position:relative;width:${W}px;height:42px;margin:4px 0 2px">${bars}${ticks}</div>`
+        + `<div style="font-size:9px;color:#5b6c7d;margin-bottom:4px">▲ TAF timeline · solid=prevailing · faded=TEMPO/PROB · white line=now</div>`;
+    }
+
+    /* webcam thumbnail for station popup */
+    function camThumbHtml(icao){
+      const camId = STATION_CAM[icao];
+      if(!camId) return '';
+      const camData = (state.cams||{})[camId];
+      if(!camData || !camData.cams || !camData.cams.length) return '';
+      const working = camData.cams.filter(c=>c.img && !c.maint && !c.broken);
+      if(!working.length) return '';
+      // show up to 3 camera thumbnails
+      const show = working.slice(0, 3);
+      let html = `<div style="margin-bottom:4px"><span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">WEBCAM</span>`;
+      html += ` <a href="${CAM_LINK(camId)}" target="_blank" style="color:#4da3e8;font-size:10px;text-decoration:none">FAA WeatherCams ↗</a></div>`;
+      html += `<div style="display:flex;gap:4px;flex-wrap:wrap">`;
+      show.forEach(c=>{
+        const imgUrl = typeof c.img === 'string' ? c.img : (c.img && c.img.imageUri) || '';
+        if(!imgUrl) return;
+        const dir = c.dir || (c.bearing !== null ? Math.round(c.bearing)+'°' : '');
+        html += `<div style="position:relative"><img src="${esc(imgUrl)}" style="width:105px;height:70px;object-fit:cover;border-radius:4px;border:1px solid #263649" loading="lazy" onerror="this.style.display='none'"/>`;
+        if(dir) html += `<span style="position:absolute;bottom:2px;left:3px;font-size:8px;color:#fff;background:rgba(0,0,0,0.6);padding:1px 3px;border-radius:2px">${esc(dir)}</span>`;
+        html += `</div>`;
+      });
+      html += `</div>`;
+      return html;
+    }
+
+    /* full click popup: raw METAR, MADIS, TAF + timeline + webcam */
     function stnPopupHtml(icao, name, per){
       const obs = per.obs || {};
       const obsCat = per.obsCat || 'NA';
       const tafCat = (per.tafCat && per.tafCat !== 'NA') ? per.tafCat : null;
       const tafCol = tafCat ? catHex(tafCat) : null;
-      let html = `<div style="margin-bottom:6px"><b style="font-size:13px">${name}</b> <span style="color:#92a7ba;font-size:11px">${icao}</span></div>`;
+      let html = `<div style="margin-bottom:6px"><b style="font-size:13px">${name}</b> <span style="color:#92a7ba;font-size:11px">${icao}</span>`;
+      if(isObsStale(per)) html += ` <span style="color:#ffaa00;font-size:10px;font-weight:600">⚠ STALE OBS</span>`;
+      html += `</div>`;
 
       /* METAR */
       html += `<div style="margin-bottom:6px"><span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">METAR</span> <span style="color:${catHex(obsCat)};font-weight:700">${obsCat}</span>`;
@@ -6268,36 +6407,107 @@ function renderBoard(){
         if(tafCat && catRank[tafCat] !== undefined && catRank[obsCat] !== undefined && catRank[tafCat] > catRank[obsCat]){
           html += ` <span style="color:${tafCol};font-weight:700;font-size:10.5px">&#9888; hold/cancel risk</span>`;
         }
+        /* TAF timeline bar */
+        html += tafTimelineHtml(icao);
         html += `<div style="font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:#c8d6e0;white-space:pre-wrap;margin-top:2px;line-height:1.3">${esc(taf.rawTAF)}</div>`;
         html += `</div>`;
       } else {
         html += `<div style="color:#5b6c7d;font-size:10.5px">No TAF</div>`;
       }
 
+      /* Webcam */
+      html += camThumbHtml(icao);
+
       return html;
     }
 
-    /* draw corridor lines (subtle, behind station dots) */
+    /* helper: is this obs stale? */
+    function isObsStale(per){
+      const obs = per && per.obs;
+      if(!obs || !obs.t) return true; // no obs at all = stale
+      const age = (Date.now()/1000 - obs.t) / 60;
+      return age > STALE_MINUTES;
+    }
+
+    /* corridor popup: full weather breakdown for a route */
+    function corrPopupHtml(c){
+      const ds = stnMap[c.dest];
+      let html = `<div style="margin-bottom:6px"><b style="font-size:13px">${esc(c.label)}</b></div>`;
+      /* category */
+      html += `<div style="margin-bottom:4px"><span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">CATEGORY</span> `;
+      html += `<span class="worst" style="color:${catHex(c.now.cat)};font-weight:700;font-size:12px">${c.now.cat}</span>`;
+      if(c.cat !== c.now.cat){
+        html += ` <span style="color:var(--amber)">→</span> <span style="color:${catHex(c.cat)};font-weight:700;font-size:12px">${c.cat}</span>`;
+      }
+      html += `</div>`;
+      /* ceiling & vis */
+      html += `<div style="margin-bottom:4px;font-size:11px">`;
+      html += `<span style="color:#92a7ba">Ceiling:</span> ${fmtCig(c.now.cig)}`;
+      if(c.cig !== null && c.cig < (c.now.cig || 99999)) html += ` <span style="color:var(--amber)">→ ${fmtCig(c.cig)}</span>`;
+      html += ` &nbsp; <span style="color:#92a7ba">Vis:</span> ${c.now.vis !== null ? visTxt(c.now.visRaw ?? c.now.vis) + ' sm' : '?'}`;
+      if(c.vis !== null && c.vis < (c.now.vis || 99)) html += ` <span style="color:var(--amber)">→ ${visTxt(c.visRaw ?? c.vis)} sm</span>`;
+      html += `</div>`;
+      /* via stations */
+      html += `<div style="margin-bottom:4px"><span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">VIA</span> <span style="font-size:11px">${c.via.join(' → ')}</span></div>`;
+      /* FA zones */
+      if(c.zones && c.zones.length){
+        html += `<div style="margin-bottom:4px"><span style="color:var(--amber);font-weight:600;font-size:10px;letter-spacing:.5px">FA ZONES</span> `;
+        c.zones.forEach(z=>{
+          const cat = zoneFaCat(z);
+          const nm = (FA_ZONES[z]||z).replace(' and ',' & ');
+          html += `<span style="color:${catHex(cat)};font-weight:600;font-size:11px;margin-right:6px">${z}: ${nm} (${cat})</span>`;
+        });
+        html += `</div>`;
+      }
+      /* weather */
+      const observed = wxSummary([...c.now.wx]);
+      const added = [...c.wx].filter(t=>!c.now.wx.has(t));
+      if(observed) html += `<div style="font-size:11px;margin-bottom:2px"><span style="color:#92a7ba">Wx now:</span> ${observed}</div>`;
+      if(added.length) html += `<div style="font-size:11px;color:var(--amber);margin-bottom:2px">Forecast: ${added.map(wxWord).join(', ')}</div>`;
+      /* icing */
+      const iceStr = corrIceHTML(c, {small:true});
+      if(iceStr) html += `<div style="margin-top:2px;font-size:11px">${iceStr.replace(/^<br>/,'')}</div>`;
+      return html;
+    }
+
+    /* draw corridor lines (interactive: click for weather breakdown) */
     const drawn = new Set();
     corr.forEach(c=>{
       const ds = stnMap[c.dest]; if(!ds || drawn.has(c.dest)) return; drawn.add(c.dest);
       const nowCol = catHex(c.now.cat);
       const coords = [[jnu.lat, jnu.lon],[ds.lat, ds.lon]];
-      L.polyline(coords, {color: nowCol, weight: 2, opacity: 0.45}).addTo(layers);
+      const solidLine = L.polyline(coords, {color: nowCol, weight: 3, opacity: 0.5, interactive: true});
+      solidLine.bindTooltip(`<b>${esc(c.label)}</b><br><span style="color:${catHex(c.now.cat)};font-weight:700">${c.now.cat}</span>${c.cat!==c.now.cat?' → <span style="color:'+catHex(c.cat)+';font-weight:700">'+c.cat+'</span>':''}<br><span style="color:#6b7d8f;font-size:9.5px">click for details</span>`, {
+        sticky: true, className: 'corrmap-tip'
+      });
+      solidLine.on('click', function(e){
+        L.popup({maxWidth: 380, minWidth: 260, className: ''})
+          .setLatLng(e.latlng)
+          .setContent(corrPopupHtml(c))
+          .openOn(map);
+      });
+      solidLine.addTo(layers);
       if(c.cat !== c.now.cat){
-        L.polyline(coords, {color: catHex(c.cat), weight: 2, opacity: 0.4, dashArray: '6 4'}).addTo(layers);
+        L.polyline(coords, {color: catHex(c.cat), weight: 2, opacity: 0.4, dashArray: '6 4', interactive: false}).addTo(layers);
       }
-      /* split-circle station marker */
+      /* split-circle station marker with wind barb + stale indicator */
       const dPer = (window.lastPer||{})[c.dest] || {};
       const obsCat = dPer.obsCat || c.now.cat || 'NA';
       const tafCat = (dPer.tafCat && dPer.tafCat !== 'NA') ? dPer.tafCat : null;
       const dotSz = 16;
+      const dObs = dPer.obs || {};
+      const dotOpts = {
+        stale: isObsStale(dPer),
+        wdir: dObs.wdir,
+        wspd: dObs.wspd || 0
+      };
+      const fullSz = dotSz + 20; // svg is larger to accommodate wind barb
       const tipDir = ds.lat > 59 ? 'bottom' : ds.lat < 55.5 ? 'top' : ds.lon < -136 ? 'right' : 'top';
       L.marker([ds.lat, ds.lon], {
         icon: L.divIcon({
           className: '',
-          html: splitDotSvg(catHex(obsCat), tafCat ? catHex(tafCat) : noTafCol, dotSz),
-          iconSize: [dotSz, dotSz], iconAnchor: [dotSz/2, dotSz/2]
+          html: splitDotSvg(catHex(obsCat), tafCat ? catHex(tafCat) : noTafCol, dotSz, dotOpts),
+          iconSize: [fullSz, fullSz], iconAnchor: [fullSz/2, fullSz/2]
         })
       }).bindTooltip(stnHoverTip(ds.name, dPer), {
         permanent: false, direction: tipDir, className: 'corrmap-tip',
@@ -6310,16 +6520,19 @@ function renderBoard(){
       }).addTo(layers);
     });
 
-    /* JNU hub marker: same split circle, larger */
+    /* JNU hub marker: same split circle, larger, with wind barb */
     const jnuPer = (window.lastPer||{})['PAJN'] || {};
     const jnuObsCat = jnuPer.obsCat || 'NA';
     const jnuTafCat = (jnuPer.tafCat && jnuPer.tafCat !== 'NA') ? jnuPer.tafCat : null;
     const jnuSz = 22;
+    const jnuObs = jnuPer.obs || {};
+    const jnuOpts = {stale: isObsStale(jnuPer), wdir: jnuObs.wdir, wspd: jnuObs.wspd || 0};
+    const jnuFullSz = jnuSz + 20;
     L.marker([jnu.lat, jnu.lon], {
       icon: L.divIcon({
         className: '',
-        html: splitDotSvg(catHex(jnuObsCat), jnuTafCat ? catHex(jnuTafCat) : noTafCol, jnuSz),
-        iconSize: [jnuSz, jnuSz], iconAnchor: [jnuSz/2, jnuSz/2]
+        html: splitDotSvg(catHex(jnuObsCat), jnuTafCat ? catHex(jnuTafCat) : noTafCol, jnuSz, jnuOpts),
+        iconSize: [jnuFullSz, jnuFullSz], iconAnchor: [jnuFullSz/2, jnuFullSz/2]
       })
     }).bindTooltip('JNU', {
       permanent: true, direction: 'top', className: 'corrmap-hub',
@@ -6341,9 +6554,12 @@ function renderBoard(){
           `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:11px">${c2}</span></span>`
         ).join('')
         + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Station Dot</b>'
-        + `<span style="display:inline-flex;align-items:center;gap:6px">${splitDotSvg('#46c17a','#e2574b',18)}<span style="font-size:10.5px">left = OBS, right = TAF</span></span>`
-        + '<br><span style="font-size:10px;color:#92a7ba">click station for full METAR/TAF</span>'
-        + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">corridor forecast change</span></span>'
+        + `<span style="display:inline-flex;align-items:center;gap:6px">${splitDotSvg('#46c17a','#e2574b',14)}<span style="font-size:10.5px">left=OBS right=TAF · barb=wind</span></span>`
+        + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:12px;height:12px;border:1.5px solid #ffaa00;border-radius:50%;display:inline-block;opacity:0.7"></span><span style="font-size:10px;color:#ffaa00">stale obs (>90 min)</span></span>'
+        + '<br><span style="font-size:10px;color:#92a7ba">click station for METAR/TAF/cam</span>'
+        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Corridors</b>'
+        + '<span style="font-size:10px;color:#92a7ba">click line for route weather</span>'
+        + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">forecast change</span></span>'
         + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Zone (FA forecast)</b>'
         + '<span style="font-size:10px;color:#92a7ba">click zone for full brief</span>';
       return d;
@@ -7377,7 +7593,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b277-stn-popup';
+const BUILD_TAG = 'b278-map-enhance';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
