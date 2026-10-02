@@ -103,9 +103,9 @@ label{color:var(--mut);font-size:13px}
 #corrmap .leaflet-popup-tip{background:#0e141b!important;border:1px solid #263649!important}
 #corrmap .leaflet-popup-close-button{color:#92a7ba!important;font-size:18px!important;padding:4px 6px!important}
 #corrmap .leaflet-popup-close-button:hover{color:#e9f0f6!important}
-#stn-hover-popup{position:fixed;z-index:9999;pointer-events:none;background:#0e141b;color:#e9f0f6;border:1px solid #263649;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.6);font-family:'Barlow',sans-serif;font-size:11.5px;line-height:1.4;padding:10px 12px;max-height:480px;max-width:440px;overflow-y:auto;display:none}
-#stn-hover-popup::-webkit-scrollbar{width:4px}
-#stn-hover-popup::-webkit-scrollbar-thumb{background:#263649;border-radius:2px}
+#map-hover-popup{position:fixed;z-index:9999;pointer-events:none;background:#0e141b;color:#e9f0f6;border:1px solid #263649;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.6);font-family:'Barlow',sans-serif;font-size:11.5px;line-height:1.4;padding:10px 12px;max-height:480px;max-width:440px;overflow-y:auto;display:none}
+#map-hover-popup::-webkit-scrollbar{width:4px}
+#map-hover-popup::-webkit-scrollbar-thumb{background:#263649;border-radius:2px}
 /* limits modal */
 #modalBg{position:fixed;inset:0;background:rgba(4,8,12,.72);z-index:50;display:none}
 #modal{position:fixed;z-index:51;top:4vh;left:50%;transform:translateX(-50%);width:min(860px,94vw);max-height:90vh;overflow-y:auto;background:var(--panel);border:1px solid var(--amber);border-radius:12px;padding:18px 20px;display:none}
@@ -924,7 +924,7 @@ body.kiosk #camWrap{columns:560px 3}
 <div id="sparkTip" style="position:fixed;z-index:98;display:none;background:#0a0f14;border:1px solid var(--amber);border-radius:6px;padding:5px 9px;font-family:var(--mono);font-size:11.5px;pointer-events:none;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.5)"></div>
 <div id="modalBg"></div>
 <div id="modal"></div>
-<div id="stn-hover-popup"></div>
+<div id="map-hover-popup"></div>
 
 <script>
 'use strict';
@@ -6182,16 +6182,12 @@ function renderBoard(){
         fillColor: col, fillOpacity: 0.15,
         interactive: true
       });
-      /* hover tooltip with click hint */
-      poly.bindTooltip(`<b>${zid}: ${zoneName}</b><br><span style="color:${col};font-weight:700">${cat}</span> <span style="color:#92a7ba;font-size:10.5px">FA forecast</span><br><span style="color:#6b7d8f;font-size:9.5px">click for full brief</span>`, {
-        sticky: true, className: 'corrmap-tip', offset: [0, 0]
+      /* hover opens full brief in floating popup */
+      poly.on('mouseover', function(e){
+        showMapHover(zoneBriefHtml(zid), e.latlng, map);
       });
-      /* click opens full brief popup */
-      poly.on('click', function(e){
-        L.popup({maxWidth: 360, minWidth: 280, className: ''})
-          .setLatLng(e.latlng)
-          .setContent(zoneBriefHtml(zid))
-          .openOn(map);
+      poly.on('mouseout', function(){
+        hideMapHover();
       });
       poly.addTo(layers);
 
@@ -6425,18 +6421,18 @@ function renderBoard(){
       return html;
     }
 
-    /* floating hover popup helpers */
-    function showStnHover(e, icao, name, per, map){
-      const el = document.getElementById('stn-hover-popup');
+    /* floating hover popup helpers (shared by stations + zones) */
+    function showMapHover(html, latlng, map){
+      const el = document.getElementById('map-hover-popup');
       if(!el) return;
-      el.innerHTML = stnPopupHtml(icao, name, per);
+      el.innerHTML = html;
       el.style.display = 'block';
-      /* position: get marker screen coords via map container */
+      /* position: get screen coords via map container */
       const mapRect = map.getContainer().getBoundingClientRect();
-      const pt = map.latLngToContainerPoint(e.latlng);
+      const pt = map.latLngToContainerPoint(latlng);
       const px = mapRect.left + pt.x;
       const py = mapRect.top + pt.y;
-      /* place popup to the right of the marker, or left if near right edge */
+      /* place popup to the right, or left if near right edge */
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       const popW = Math.min(el.scrollWidth, 440);
@@ -6449,8 +6445,8 @@ function renderBoard(){
       el.style.left = left + 'px';
       el.style.top = top + 'px';
     }
-    function hideStnHover(){
-      const el = document.getElementById('stn-hover-popup');
+    function hideMapHover(){
+      const el = document.getElementById('map-hover-popup');
       if(el) el.style.display = 'none';
     }
 
@@ -6543,9 +6539,9 @@ function renderBoard(){
           iconSize: [fullSz, fullSz], iconAnchor: [fullSz/2, fullSz/2]
         })
       }).on('mouseover', function(e){
-        showStnHover(e, c.dest, ds.name, dPer, map);
+        showMapHover(stnPopupHtml(c.dest, ds.name, dPer), e.latlng, map);
       }).on('mouseout', function(){
-        hideStnHover();
+        hideMapHover();
       }).addTo(layers);
     });
 
@@ -6567,29 +6563,22 @@ function renderBoard(){
       permanent: true, direction: 'top', className: 'corrmap-hub',
       offset: [0, -14]
     }).on('mouseover', function(e){
-      showStnHover(e, 'PAJN', 'Juneau', jnuPer, map);
+      showMapHover(stnPopupHtml('PAJN', 'Juneau', jnuPer), e.latlng, map);
     }).on('mouseout', function(){
-      hideStnHover();
+      hideMapHover();
     }).addTo(layers);
 
     /* legend overlay */
     if(window._corrLegend){ window._corrLegend.remove(); window._corrLegend = null; }
-    const leg = L.control({position:'bottomleft'});
+    const leg = L.control({position:'topright'});
     leg.onAdd = function(){
       const d = L.DomUtil.create('div','corrmap-legend');
-      d.innerHTML = '<b style="font-size:11px;margin-bottom:4px;display:block">Flight Category</b>'
-        + ['VFR','MVFR','IFR','LIFR'].map(c2=>
-          `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:8px"><span style="width:10px;height:10px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:11px">${c2}</span></span>`
+      d.innerHTML = ['VFR','MVFR','IFR','LIFR'].map(c2=>
+          `<span style="display:inline-flex;align-items:center;gap:3px;margin-right:6px"><span style="width:8px;height:8px;border-radius:2px;background:${catHex(c2)};display:inline-block"></span><span style="font-size:10px">${c2}</span></span>`
         ).join('')
-        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Station Dot</b>'
-        + `<span style="display:inline-flex;align-items:center;gap:6px">${splitDotSvg('#46c17a','#e2574b',14)}<span style="font-size:10.5px">left=OBS right=TAF · barb=wind</span></span>`
-        + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:12px;height:12px;border:1.5px solid #ffaa00;border-radius:50%;display:inline-block;opacity:0.7"></span><span style="font-size:10px;color:#ffaa00">stale obs (>90 min)</span></span>'
-        + '<br><span style="font-size:10px;color:#92a7ba">hover station for METAR/TAF/cam</span>'
-        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Corridors</b>'
-        + '<span style="font-size:10px;color:#92a7ba">click line for route weather</span>'
-        + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">forecast change</span></span>'
-        + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Zone (FA forecast)</b>'
-        + '<span style="font-size:10px;color:#92a7ba">click zone for full brief</span>';
+        + `<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px">${splitDotSvg('#46c17a','#e2574b',12)}<span style="font-size:9.5px">L=obs R=taf · barb=wind</span></span>`
+        + '<span style="display:inline-flex;align-items:center;gap:3px;margin-left:8px"><span style="width:10px;height:10px;border:1.5px solid #ffaa00;border-radius:50%;display:inline-block;opacity:0.7"></span><span style="font-size:9.5px;color:#ffaa00">&gt;90m</span></span>'
+        + '<br><span style="font-size:9.5px;color:#92a7ba">hover: station or zone · click: corridor line</span>';
       return d;
     };
     leg.addTo(map);
@@ -7621,7 +7610,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b279-hover-popup';
+const BUILD_TAG = 'b280-hover-zones';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
