@@ -6009,13 +6009,22 @@ function renderBoard(){
     const catHex = c => c==='VFR'?'#46c17a':c==='MVFR'?'#4da3e8':c==='IFR'?'#e2574b':c==='LIFR'?'#c964dd':'#5b6c7d';
     const jnu = stnMap['PAJN'];
 
-    /* approximate FA zone polygons for SE Alaska */
+    /* approximate FA zone polygons for SE Alaska
+       Shared boundary vertices so zones tile seamlessly with no gaps.
+       Boundaries follow the AAWU area forecast zone definitions. */
+    const _A=[60.3,-141.8], _B=[60.3,-138.0], _C=[59.6,-137.0], _D=[59.2,-136.2],
+          _E=[58.5,-136.5], _F=[57.6,-135.8], _G=[57.0,-135.5], _H=[56.0,-136.0],
+          _I=[55.0,-137.0], _J=[54.5,-137.5], _K=[54.5,-141.8],
+          _L=[59.0,-139.5], _M=[58.8,-138.8],
+          _N=[59.4,-134.8], _O=[58.8,-134.0], _P=[58.3,-133.8],
+          _Q=[57.5,-133.0], _R=[57.0,-132.5], _S=[56.5,-131.8],
+          _T=[55.8,-131.0], _U=[55.0,-130.5], _V=[54.5,-131.0];
     const FA_ZONE_POLYS = {
-      JE: [[60.3,-141.8],[60.3,-138.2],[59.7,-137.8],[59.2,-138.5],[58.8,-139.2],[59.0,-140.5],[59.5,-141.8]],
-      JB: [[59.7,-137.8],[59.5,-135.8],[59.2,-134.6],[58.8,-134.2],[58.2,-134.8],[58.2,-135.8],[58.5,-136.8],[59.2,-138.5]],
-      JC: [[58.2,-134.8],[58.8,-134.2],[58.5,-133.0],[57.8,-132.8],[57.0,-133.2],[56.8,-134.0],[57.0,-135.5],[57.5,-136.2],[58.2,-135.8]],
-      JD: [[57.0,-135.5],[56.8,-134.0],[57.0,-133.2],[56.5,-132.0],[56.0,-131.5],[55.5,-131.0],[55.0,-130.8],[54.6,-131.5],[54.8,-132.8],[55.3,-133.5],[55.5,-134.8],[56.0,-136.0]],
-      JF: [[60.3,-141.8],[59.5,-141.8],[59.0,-140.5],[58.8,-139.2],[58.5,-136.8],[57.5,-136.2],[57.0,-135.5],[56.0,-136.0],[55.5,-136.5],[55.0,-137.0],[54.5,-137.5],[54.5,-141.8]]
+      JE: [_A, _B, _C, _D, _E, _M, _L, [59.5,-141.8]],
+      JB: [_C, _N, _O, _P, [58.3,-134.8], _E, _D],
+      JC: [[58.3,-134.8], _P, _Q, _R, _G, _F, _E],
+      JD: [_G, _R, _S, _T, _U, _V, [54.5,-132.5], [55.0,-134.0], [55.5,-135.2], _H],
+      JF: [_A, [59.5,-141.8], _L, _M, _E, _F, _G, _H, _I, _J, _K]
     };
 
     /* determine zone condition color from FA data */
@@ -6036,13 +6045,14 @@ function renderBoard(){
     /* init or update: keep map instance across refreshes so zoom/pan persists */
     if(!window._corrMap){
       window._corrMap = L.map(corrMapEl, {
-        center: [57.5, -135.2],
-        zoom: 7,
         zoomControl: true,
         attributionControl: false,
         maxBounds: [[54, -142],[61, -129]],
-        maxBoundsViscosity: 0.8
+        maxBoundsViscosity: 0.8,
+        minZoom: 6
       });
+      /* fit to SE Alaska bounds so the map fills vertically */
+      window._corrMap.fitBounds([[54.5, -141.5],[60.2, -130.5]], {padding: [10, 10]});
       /* dark basemap - Esri dark gray (free, no API key) */
       L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
         maxZoom: 13, minZoom: 5
@@ -7203,7 +7213,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b270-map-taf';
+const BUILD_TAG = 'b271-cam-zones';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.

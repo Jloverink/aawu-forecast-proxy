@@ -5,6 +5,10 @@
       "dest": "/api/proxy.js"
     },
     {
+      "src": "/api/wxcam",
+      "dest": "/api/wxcam.js"
+    },
+    {
       "src": "/(.*)",
       "headers": { "Content-Type": "text/html; charset=utf-8" },
       "dest": "/index.js"
