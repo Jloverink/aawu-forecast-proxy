@@ -103,6 +103,9 @@ label{color:var(--mut);font-size:13px}
 #corrmap .leaflet-popup-tip{background:#0e141b!important;border:1px solid #263649!important}
 #corrmap .leaflet-popup-close-button{color:#92a7ba!important;font-size:18px!important;padding:4px 6px!important}
 #corrmap .leaflet-popup-close-button:hover{color:#e9f0f6!important}
+#stn-hover-popup{position:fixed;z-index:9999;pointer-events:none;background:#0e141b;color:#e9f0f6;border:1px solid #263649;border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.6);font-family:'Barlow',sans-serif;font-size:11.5px;line-height:1.4;padding:10px 12px;max-height:480px;max-width:440px;overflow-y:auto;display:none}
+#stn-hover-popup::-webkit-scrollbar{width:4px}
+#stn-hover-popup::-webkit-scrollbar-thumb{background:#263649;border-radius:2px}
 /* limits modal */
 #modalBg{position:fixed;inset:0;background:rgba(4,8,12,.72);z-index:50;display:none}
 #modal{position:fixed;z-index:51;top:4vh;left:50%;transform:translateX(-50%);width:min(860px,94vw);max-height:90vh;overflow-y:auto;background:var(--panel);border:1px solid var(--amber);border-radius:12px;padding:18px 20px;display:none}
@@ -921,6 +924,7 @@ body.kiosk #camWrap{columns:560px 3}
 <div id="sparkTip" style="position:fixed;z-index:98;display:none;background:#0a0f14;border:1px solid var(--amber);border-radius:6px;padding:5px 9px;font-family:var(--mono);font-size:11.5px;pointer-events:none;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.5)"></div>
 <div id="modalBg"></div>
 <div id="modal"></div>
+<div id="stn-hover-popup"></div>
 
 <script>
 'use strict';
@@ -6421,6 +6425,35 @@ function renderBoard(){
       return html;
     }
 
+    /* floating hover popup helpers */
+    function showStnHover(e, icao, name, per, map){
+      const el = document.getElementById('stn-hover-popup');
+      if(!el) return;
+      el.innerHTML = stnPopupHtml(icao, name, per);
+      el.style.display = 'block';
+      /* position: get marker screen coords via map container */
+      const mapRect = map.getContainer().getBoundingClientRect();
+      const pt = map.latLngToContainerPoint(e.latlng);
+      const px = mapRect.left + pt.x;
+      const py = mapRect.top + pt.y;
+      /* place popup to the right of the marker, or left if near right edge */
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const popW = Math.min(el.scrollWidth, 440);
+      const popH = Math.min(el.scrollHeight, 480);
+      let left = px + 20;
+      let top = py - popH / 2;
+      if(left + popW > vw - 10) left = px - popW - 20;
+      if(top < 10) top = 10;
+      if(top + popH > vh - 10) top = vh - popH - 10;
+      el.style.left = left + 'px';
+      el.style.top = top + 'px';
+    }
+    function hideStnHover(){
+      const el = document.getElementById('stn-hover-popup');
+      if(el) el.style.display = 'none';
+    }
+
     /* helper: is this obs stale? */
     function isObsStale(per){
       const obs = per && per.obs;
@@ -6509,14 +6542,10 @@ function renderBoard(){
           html: splitDotSvg(catHex(obsCat), tafCat ? catHex(tafCat) : noTafCol, dotSz, dotOpts),
           iconSize: [fullSz, fullSz], iconAnchor: [fullSz/2, fullSz/2]
         })
-      }).bindTooltip(stnHoverTip(ds.name, dPer), {
-        permanent: false, direction: tipDir, className: 'corrmap-tip',
-        offset: [0, tipDir==='bottom' ? 10 : -10]
-      }).on('click', function(e){
-        L.popup({maxWidth: 420, minWidth: 260, className: ''})
-          .setLatLng(e.latlng)
-          .setContent(stnPopupHtml(c.dest, ds.name, dPer))
-          .openOn(map);
+      }).on('mouseover', function(e){
+        showStnHover(e, c.dest, ds.name, dPer, map);
+      }).on('mouseout', function(){
+        hideStnHover();
       }).addTo(layers);
     });
 
@@ -6537,11 +6566,10 @@ function renderBoard(){
     }).bindTooltip('JNU', {
       permanent: true, direction: 'top', className: 'corrmap-hub',
       offset: [0, -14]
-    }).on('click', function(e){
-      L.popup({maxWidth: 420, minWidth: 280, className: ''})
-        .setLatLng(e.latlng)
-        .setContent(stnPopupHtml('PAJN', 'Juneau', jnuPer))
-        .openOn(map);
+    }).on('mouseover', function(e){
+      showStnHover(e, 'PAJN', 'Juneau', jnuPer, map);
+    }).on('mouseout', function(){
+      hideStnHover();
     }).addTo(layers);
 
     /* legend overlay */
@@ -6556,7 +6584,7 @@ function renderBoard(){
         + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Station Dot</b>'
         + `<span style="display:inline-flex;align-items:center;gap:6px">${splitDotSvg('#46c17a','#e2574b',14)}<span style="font-size:10.5px">left=OBS right=TAF · barb=wind</span></span>`
         + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:12px;height:12px;border:1.5px solid #ffaa00;border-radius:50%;display:inline-block;opacity:0.7"></span><span style="font-size:10px;color:#ffaa00">stale obs (>90 min)</span></span>'
-        + '<br><span style="font-size:10px;color:#92a7ba">click station for METAR/TAF/cam</span>'
+        + '<br><span style="font-size:10px;color:#92a7ba">hover station for METAR/TAF/cam</span>'
         + '<br><b style="font-size:11px;margin:6px 0 2px;display:block">Corridors</b>'
         + '<span style="font-size:10px;color:#92a7ba">click line for route weather</span>'
         + '<br><span style="display:inline-flex;align-items:center;gap:4px;margin-top:2px"><span style="width:20px;border-top:2px dashed #92a7ba;display:inline-block"></span><span style="font-size:10px;color:#92a7ba">forecast change</span></span>'
@@ -7593,7 +7621,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b278-map-enhance';
+const BUILD_TAG = 'b279-hover-popup';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
