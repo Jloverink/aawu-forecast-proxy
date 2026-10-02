@@ -86,8 +86,8 @@ label{color:var(--mut);font-size:13px}
 .ext .wind{font-family:var(--disp);font-weight:700;font-size:26px;line-height:1.1}
 .ext .meta{color:var(--mut);font-size:11.5px;margin-top:2px}
 .pill{font-size:11px;font-weight:700;padding:2px 8px;border-radius:12px;color:#0c1116}
-.pill.ok{background:var(--vfr)} .pill.caution{background:var(--amber)} .pill.over{background:var(--ifr)} .pill.na{background:var(--na)}
-.pill.appr{background:var(--mvfr)}
+.pill.ok{background:var(--vfr)} .pill.caution{background:var(--amber);color:#1a1200} .pill.over{background:var(--ifr)} .pill.na{background:var(--na)}
+.pill.appr{background:#e67e22;color:#1a0e00}
 /* limits modal */
 #modalBg{position:fixed;inset:0;background:rgba(4,8,12,.72);z-index:50;display:none}
 #modal{position:fixed;z-index:51;top:4vh;left:50%;transform:translateX(-50%);width:min(860px,94vw);max-height:90vh;overflow-y:auto;background:var(--panel);border:1px solid var(--amber);border-radius:12px;padding:18px 20px;display:none}
@@ -3538,7 +3538,11 @@ function evalClass(arcs, wdir, spd){
   // variable or unknown direction: judge against the most restrictive arc
   const arc = candidates.reduce((a,b)=>(a.max??1e9)<=(b.max??1e9)?a:b);
   if(arc.max === null || arc.max === undefined) return {cls:'ok', label:'PILOT DISCRETION', arc};
-  if(spd <= arc.max) return {cls:'ok', label:'OK', arc};
+  if(spd <= arc.max){
+    const margin = arc.max - spd;
+    if(margin <= 5 && spd > 0) return {cls:'caution', label:'CLOSE', arc};
+    return {cls:'ok', label:'OK', arc};
+  }
   if(arc.appr && spd <= arc.appr) return {cls:'appr', label:'MGMT APPROVAL', arc};
   return {cls:'over', label:'OVER LIMIT', arc};
 }
@@ -3567,7 +3571,7 @@ function stationWindEval(icao, o){
   if(!w) return {cls:'na', w:null, hits:[]};
   const spd = Math.max(w.wspd||0, w.wgst||0);
   if(!spd) return {cls:'ok', w, hits:[]};
-  const rank = {na:-1, ok:0, appr:1, over:2};
+  const rank = {na:-1, ok:0, caution:1, appr:2, over:3};
   let worst = 'na'; const hits = [];
   ['float','c208','pc12'].forEach(k=>{
     const arcs = L[k];
@@ -3735,10 +3739,15 @@ function roseSVG(icao, size){
     {key:'c208',  tag:'208', r1:R*0.78, r2:R*0.58},
     {key:'pc12',  tag:'P12', r1:R,      r2:R*0.80},
   ];
-  const statusOf = a => (a.max==null) ? 'go' : (spd<=a.max) ? 'go' : (a.appr && spd<=a.appr) ? 'appr' : 'over';
+  const statusOf = a => {
+    if(a.max==null) return 'go';
+    if(spd<=a.max){ return (a.max - spd <= 5 && spd > 0) ? 'caut' : 'go'; }
+    return (a.appr && spd<=a.appr) ? 'appr' : 'over';
+  };
   const FILLS = {
     go:   {live:`url(#g_go_${uid})`,   dim:'#1d4030'},
-    appr: {live:`url(#g_ap_${uid})`,   dim:'#4d3d17'},
+    caut: {live:`url(#g_ca_${uid})`,   dim:'#3d3518'},
+    appr: {live:`url(#g_ap_${uid})`,   dim:'#4d3017'},
     over: {live:`url(#g_ov_${uid})`,   dim:'#4a2225'},
   };
   let segs='', labels='', ringTags='';
@@ -3755,7 +3764,7 @@ function roseSVG(icao, size){
         const fill = active ? FILLS[st].live : FILLS[st].dim;
         const glow = active ? ` filter="url(#glow_${uid})" stroke="#e9f0f6" stroke-width="1.8"` : ' stroke="var(--bg)" stroke-width="1.5" opacity="0.9"';
         const apprTxt = a.appr && a.appr<99 ? ', '+a.appr+' kt with mgmt approval' : (a.appr===99 ? ', above with mgmt approval' : '');
-        segs += `<path d="${arcPath(cx,cy,ring.r1,ring.r2,a0,a1r)}" fill="${fill}"${glow}><title>${ring.tag} ${arcTxt(a)}: max ${a.max} kt${apprTxt}. ${active?'CURRENT WIND ARC: '+({go:'GO',appr:'MGMT APPROVAL',over:'OVER LIMIT'})[st]:''}</title></path>`;
+        segs += `<path d="${arcPath(cx,cy,ring.r1,ring.r2,a0,a1r)}" fill="${fill}"${glow}><title>${ring.tag} ${arcTxt(a)}: max ${a.max} kt${apprTxt}. ${active?'CURRENT WIND ARC: '+({go:'GO',caut:'CLOSE TO LIMIT',appr:'MGMT APPROVAL',over:'OVER LIMIT'})[st]:''}</title></path>`;
         const mid=((a0+((a1r-a0+360)%360)/2))%360, rad=(mid-90)*Math.PI/180;
         labels += `<text x="${cx+rm*Math.cos(rad)}" y="${cy+rm*Math.sin(rad)+size*0.016}" text-anchor="middle" font-size="${size*0.048}" fill="#f4f8fb" font-family="Barlow Condensed" font-weight="700" paint-order="stroke" stroke="#0a0f14" stroke-width="3">${a.max==null?'PD':a.max}</text>`;
       });
@@ -3788,15 +3797,16 @@ function roseSVG(icao, size){
     hub += `<text x="${cx}" y="${cy+4}" text-anchor="middle" font-size="${size*0.07}" fill="var(--mut)" font-family="Barlow Condensed" font-weight="600">${spd===0?'CALM':spd+' KT VRB'}</text>`;
   }
   // legend chips
-  const chipW=size*0.30, chipH=size*0.045, cyL=size-chipH-3;
-  const chip=(x,fill,txt)=>`<rect x="${x}" y="${cyL}" rx="${chipH/2}" width="${chipW}" height="${chipH}" fill="${fill}" opacity="0.92"/><text x="${x+chipW/2}" y="${cyL+chipH*0.72}" text-anchor="middle" font-size="${size*0.032}" fill="#0c1116" font-family="Barlow" font-weight="700">${txt}</text>`;
-  const legend = chip(size*0.03,'var(--vfr)','GO') + chip(size*0.35,'var(--amber)','MGMT APPR') + chip(size*0.67,'var(--ifr)','OVER LIMIT');
+  const chipW=size*0.22, chipH=size*0.045, cyL=size-chipH-3;
+  const chip=(x,fill,txt)=>`<rect x="${x}" y="${cyL}" rx="${chipH/2}" width="${chipW}" height="${chipH}" fill="${fill}" opacity="0.92"/><text x="${x+chipW/2}" y="${cyL+chipH*0.72}" text-anchor="middle" font-size="${size*0.028}" fill="#0c1116" font-family="Barlow" font-weight="700">${txt}</text>`;
+  const legend = chip(size*0.02,'var(--vfr)','GO') + chip(size*0.26,'var(--amber)','CLOSE') + chip(size*0.50,'#e67e22','MGMT APPR') + chip(size*0.74,'var(--ifr)','OVER');
   return `<svg width="${size}" height="${size+chipH+6}" viewBox="0 0 ${size} ${size+chipH+6}" role="img" aria-label="wind limits rose">
     <defs>
       <radialGradient id="g_hub_${uid}"><stop offset="0%" stop-color="#141d28"/><stop offset="100%" stop-color="#0a0f14"/></radialGradient>
       <radialGradient id="g_bg_${uid}"><stop offset="0%" stop-color="#121b26"/><stop offset="100%" stop-color="#0c1219"/></radialGradient>
       <linearGradient id="g_go_${uid}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#2ea86a"/><stop offset="100%" stop-color="#57d68c"/></linearGradient>
-      <linearGradient id="g_ap_${uid}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#d18f22"/><stop offset="100%" stop-color="#f7c04a"/></linearGradient>
+      <linearGradient id="g_ca_${uid}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c9960e"/><stop offset="100%" stop-color="#f2c94c"/></linearGradient>
+      <linearGradient id="g_ap_${uid}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c96a10"/><stop offset="100%" stop-color="#e67e22"/></linearGradient>
       <linearGradient id="g_ov_${uid}" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#c43f34"/><stop offset="100%" stop-color="#f0685c"/></linearGradient>
       <filter id="glow_${uid}" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
       <marker id="ah_${uid}" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#eef4f9"/></marker>
@@ -4419,8 +4429,8 @@ function detectChanges(){
         }
       }
       // wind limit transitions, same engine the rose uses
-      const wRank = {na:-1, ok:0, appr:1, over:2};
-      if(a.wind && b.wind && (wRank[b.wind]??-1) > (wRank[a.wind]??-1) && (b.wind==='appr' || b.wind==='over')){
+      const wRank = {na:-1, ok:0, caution:1, appr:2, over:3};
+      if(a.wind && b.wind && (wRank[b.wind]??-1) > (wRank[a.wind]??-1) && (b.wind==='caution' || b.wind==='appr' || b.wind==='over')){
         /* name the wind, its source, and every class limit it reached, so the chip
            still explains itself half an hour later when conditions have relaxed */
         const ev = stationWindEval(st.icao, stationWorst(st.icao, 0).obs);
@@ -4430,15 +4440,19 @@ function detectChanges(){
         const lim = h => `${h.name} ${h.arc ? arcTxt(h.arc) + ' max ' + h.arc.max + ' kt' : 'limit'}`;
         const overs = ev.hits.filter(h=>h.cls==='over').map(lim).join('; ');
         const apprs = ev.hits.filter(h=>h.cls==='appr').map(lim).join('; ');
+        const cauts = ev.hits.filter(h=>h.cls==='caution').map(lim).join('; ');
         const msg = b.wind==='over'
           ? `wind ${wtx} OVER company limit${overs ? ': ' + overs : ''}${apprs ? ' (mgmt approval band: ' + apprs + ')' : ''}`
-          : `wind ${wtx} into management approval${apprs ? ': ' + apprs : ''}`;
-        const firstHit = ev.hits.find(h=>h.cls === (b.wind==='over' ? 'over' : 'appr')) || ev.hits[0];
-        const shortTxt = `wind ${ev.w ? ev.w.wspd + (ev.w.wgst ? 'G' + ev.w.wgst : '') + ' kt ' : ''}${b.wind==='over' ? 'OVER' : 'mgmt appr'}`
+          : b.wind==='appr'
+          ? `wind ${wtx} into management approval${apprs ? ': ' + apprs : ''}`
+          : `wind ${wtx} close to limit${cauts ? ': ' + cauts : ''}`;
+        const firstHit = ev.hits.find(h=>h.cls === (b.wind==='over' ? 'over' : b.wind==='appr' ? 'appr' : 'caution')) || ev.hits[0];
+        const shortTxt = `wind ${ev.w ? ev.w.wspd + (ev.w.wgst ? 'G' + ev.w.wgst : '') + ' kt ' : ''}${b.wind==='over' ? 'OVER' : b.wind==='appr' ? 'mgmt appr' : 'close to limit'}`
           + (firstHit ? ` ${firstHit.name}${firstHit.arc && firstHit.arc.max != null ? ' ' + firstHit.arc.max + ' kt' : ''}` : ' company limit');
-        state.alerts.unshift({t:Date.now(), icao:st.icao, name:st.name, worse:true, msg, short:shortTxt});
-        flashTitle();
-        playTone(b.wind==='over' ? 'over' : 'mgmt');
+        state.alerts.unshift({t:Date.now(), icao:st.icao, name:st.name, worse:b.wind!=='caution', msg, short:shortTxt});
+        if(b.wind!=='caution') flashTitle();
+        if(b.wind==='over') playTone('over');
+        else if(b.wind==='appr') playTone('mgmt');
         if(b.wind==='over') pushNotify('\ud83d\udca8 Wind limit: ' + st.name, shortTxt, 'wind-'+st.icao+'-'+Date.now());
       }
     });
@@ -7039,7 +7053,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b263-polish';
+const BUILD_TAG = 'b264-wind-tiers';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
