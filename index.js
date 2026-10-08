@@ -770,6 +770,22 @@ body.kiosk #camWrap{columns:560px 3}
 .rwybar{display:flex;align-items:center;gap:7px;margin-top:6px}
 .rwyid{font-family:var(--disp);font-weight:800;font-size:15px;color:var(--ink);background:#1b2a3a;border:1px solid var(--line);border-radius:4px;padding:1px 7px}
 .rwystrip{flex:1;min-width:120px;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--mut);background:#233241;border-radius:3px;padding:3px 6px;border:1px dashed #3a4d61}
+/* Temperature banner */
+#tempBanner{margin:0 0 10px 0;padding:10px 14px;background:linear-gradient(135deg,#162636 0%,#1b3044 100%);border:1px solid var(--line);border-radius:8px;display:none}
+#tempBanner.show{display:block}
+.tb-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap;justify-content:center}
+.tb-cell{text-align:center;min-width:90px}
+.tb-label{font-size:10.5px;text-transform:uppercase;letter-spacing:1px;color:var(--mut);margin-bottom:2px;font-family:var(--disp)}
+.tb-val{font-family:var(--disp);font-weight:800;font-size:32px;line-height:1.1}
+.tb-sub{font-size:11px;color:var(--mut);margin-top:2px;font-family:var(--mono)}
+.tb-sep{width:1px;height:44px;background:var(--line);margin:0 4px}
+.tb-frost{margin-top:6px;padding:6px 14px;border-radius:6px;font-family:var(--disp);font-weight:700;font-size:15px;text-align:center;letter-spacing:0.5px}
+.tb-frost.danger{background:rgba(226,87,75,0.18);border:2px solid var(--ifr);color:var(--ifr);animation:frostPulse 2s ease-in-out infinite}
+.tb-frost.caution{background:rgba(233,184,36,0.12);border:2px solid var(--amber);color:var(--amber)}
+.tb-frost.ok{background:rgba(70,193,122,0.10);border:1px solid var(--vfr);color:var(--vfr);font-weight:400;font-size:12px}
+@keyframes frostPulse{0%,100%{opacity:1}50%{opacity:0.6}}
+.tb-sources{font-size:10px;color:var(--mut);text-align:center;margin-top:4px;font-family:var(--mono)}
+@media(max-width:600px){.tb-val{font-size:24px}.tb-sep{height:30px}.tb-frost{font-size:13px}}
 </style>
 </head>
 <body>
@@ -801,6 +817,7 @@ body.kiosk #camWrap{columns:560px 3}
 <div id="status" class="status">Loading...</div>
 <div id="alerts"></div>
 <div id="warnbox"></div>
+<div id="tempBanner"></div>
 
 <!-- ============ LIVE ============ -->
 <div id="pane-now">
@@ -5430,6 +5447,182 @@ function overnightLow(){
     call: hangarCall(lowest.tempF, isClear ? [{cover:'CLR'}] : [{cover:'OVC', base:3000}])};
 }
 
+/* NWS 7-day forecast for Juneau - gives named high/low periods */
+const NWS_PAJN_FORECAST = 'https://api.weather.gov/gridpoints/AJK/178,72/forecast';
+async function loadDailyForecast(){
+  try{
+    const r = await fetch(NWS_PAJN_FORECAST, {headers:{accept:'application/geo+json'}});
+    if(!r.ok) return;
+    const j = await r.json();
+    const periods = (j.properties && j.properties.periods) || [];
+    state.nwsDaily = periods.slice(0, 8).map(p=>({
+      name: p.name || '',
+      tempF: p.temperature,
+      isDaytime: !!p.isDaytime,
+      sky: p.shortForecast || '',
+      detail: p.detailedForecast || '',
+      wind: p.windSpeed || '',
+      windDir: p.windDirection || '',
+      icon: p.icon || '',
+      t: new Date(p.startTime).getTime(),
+    }));
+    state.nwsDailyAt = Date.now();
+  }catch(e){}
+}
+
+/* Temperature banner - pulls from NWS daily, NWS hourly, and current METAR to
+   show a prominent high/low display with frost warnings */
+function renderTempBanner(){
+  const el = document.getElementById('tempBanner');
+  if(!el) return;
+
+  const tz = 'America/Juneau';
+  let akHour = 12;
+  try{ akHour = parseInt(new Intl.DateTimeFormat('en-US',{timeZone:tz,hour:'numeric',hour12:false}).format(new Date())); }catch(e){}
+
+  /* Gather HIGH temperatures from available sources */
+  const highs = [], lows = [], highSrcs = [], lowSrcs = [];
+
+  /* Source 1: NWS 7-day (named periods like "Today", "Tonight") */
+  if(state.nwsDaily && state.nwsDaily.length){
+    const dayPeriod = state.nwsDaily.find(p => p.isDaytime);
+    const nightPeriod = state.nwsDaily.find(p => !p.isDaytime);
+    if(dayPeriod && dayPeriod.tempF !== null){
+      highs.push(dayPeriod.tempF);
+      highSrcs.push('NWS daily');
+    }
+    if(nightPeriod && nightPeriod.tempF !== null){
+      lows.push(nightPeriod.tempF);
+      lowSrcs.push('NWS daily');
+    }
+  }
+
+  /* Source 2: NWS hourly - find max and min for rest of today/tonight */
+  if(state.nwsHourly && state.nwsHourly.length){
+    const now = Date.now();
+    /* For high: look at remaining daytime hours (until ~9pm AKT) */
+    const dayEnd = now + (21 - akHour) * 3600000;
+    const dayHours = state.nwsHourly.filter(p => p.t >= now && p.t <= dayEnd && p.tempF !== null);
+    if(dayHours.length){
+      const maxT = Math.max(...dayHours.map(p => p.tempF));
+      highs.push(maxT);
+      highSrcs.push('NWS hourly');
+    }
+    /* For low: overnight window */
+    const ovn = overnightLow();
+    if(ovn && ovn.tempF !== null){
+      lows.push(ovn.tempF);
+      lowSrcs.push('NWS hourly');
+    }
+  }
+
+  /* Source 3: Current METAR at PAJN (real-time obs) */
+  const m = state.metars && state.metars.PAJN;
+  let curTempF = null;
+  if(m && m.temp !== null && m.temp !== undefined){
+    curTempF = Math.round(m.temp * 9/5 + 32);
+    /* Current temp is a data point for both high and low */
+    highs.push(curTempF);
+    highSrcs.push('METAR');
+    lows.push(curTempF);
+    lowSrcs.push('METAR');
+  }
+
+  if(!highs.length && !lows.length){ el.classList.remove('show'); return; }
+
+  /* Compute medians */
+  function median(arr){
+    if(!arr.length) return null;
+    const s = [...arr].sort((a,b)=>a-b);
+    const mid = Math.floor(s.length/2);
+    return s.length % 2 ? s[mid] : Math.round((s[mid-1]+s[mid])/2);
+  }
+  const highMed = median(highs);
+  const lowMed = median(lows);
+
+  /* Determine sky conditions for today and tonight */
+  let daySky = '', nightSky = '';
+  if(state.nwsDaily && state.nwsDaily.length){
+    const dayP = state.nwsDaily.find(p => p.isDaytime);
+    const nightP = state.nwsDaily.find(p => !p.isDaytime);
+    if(dayP) daySky = dayP.sky;
+    if(nightP) nightSky = nightP.sky;
+  }
+  if(!daySky && state.nwsHourly && state.nwsHourly.length){
+    const now = Date.now();
+    const soon = state.nwsHourly.filter(p => p.t >= now && p.t <= now + 6*3600000);
+    if(soon.length) daySky = soon[0].sky;
+  }
+
+  const isOvercast = /overcast|cloudy|mostly cloudy/i.test(daySky) || /overcast|cloudy|mostly cloudy/i.test(nightSky);
+  const isClear = /clear|sunny|mostly sunny|mostly clear/i.test(daySky);
+  const skyLabel = isOvercast ? 'Overcast' : isClear ? 'Clear' : (daySky || 'Mixed');
+
+  /* Frost / hangar decision */
+  let frostClass = 'ok', frostMsg = '';
+  const checkTemp = lowMed !== null ? lowMed : (highMed !== null ? highMed : null);
+  if(checkTemp !== null){
+    /* Use overnight low for frost check, with sky condition */
+    const clearNight = /clear|sunny|few|mostly clear/i.test(nightSky);
+    const thresh = clearNight ? 38 : 36;
+    if(checkTemp <= thresh){
+      frostClass = 'danger';
+      frostMsg = '❄️ FROST WARNING — HANGAR AIRCRAFT — Low ' + checkTemp + '°F' + (clearNight ? ' with clear skies (threshold ' + thresh + '°F)' : ' (threshold ' + thresh + '°F)');
+    } else if(checkTemp <= thresh + 4){
+      frostClass = 'caution';
+      frostMsg = '❄️ Frost Watch — Low ' + checkTemp + '°F approaching ' + thresh + '°F threshold' + (clearNight ? ' (clear skies)' : '');
+    }
+  }
+
+  /* Determine high color - above 50F greenish, 40-50 amber, below 40 blue/cold */
+  function tempColor(f){
+    if(f === null) return 'var(--ink)';
+    if(f <= 32) return '#8eb8ff';
+    if(f <= 38) return '#6ca8f0';
+    if(f <= 45) return 'var(--amber)';
+    return 'var(--vfr)';
+  }
+
+  /* Build HTML */
+  let html = '<div class="tb-row">';
+  if(curTempF !== null){
+    html += '<div class="tb-cell">';
+    html += '<div class="tb-label">Current</div>';
+    html += '<div class="tb-val" style="color:' + tempColor(curTempF) + '">' + curTempF + '°<span style="font-size:18px">F</span></div>';
+    html += '<div class="tb-sub">PAJN METAR</div>';
+    html += '</div>';
+    html += '<div class="tb-sep"></div>';
+  }
+  if(highMed !== null){
+    html += '<div class="tb-cell">';
+    html += '<div class="tb-label">Today’s High</div>';
+    html += '<div class="tb-val" style="color:' + tempColor(highMed) + '">' + highMed + '°<span style="font-size:18px">F</span></div>';
+    html += '<div class="tb-sub">' + esc(skyLabel) + '</div>';
+    html += '</div>';
+    html += '<div class="tb-sep"></div>';
+  }
+  if(lowMed !== null){
+    html += '<div class="tb-cell">';
+    html += '<div class="tb-label">Tonight’s Low</div>';
+    html += '<div class="tb-val" style="color:' + tempColor(lowMed) + '">' + lowMed + '°<span style="font-size:18px">F</span></div>';
+    html += '<div class="tb-sub">' + esc(nightSky || skyLabel) + '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  /* Frost warning */
+  if(frostMsg){
+    html += '<div class="tb-frost ' + frostClass + '">' + frostMsg + '</div>';
+  }
+
+  /* Source info */
+  const allSrcs = [...new Set([...highSrcs, ...lowSrcs])];
+  html += '<div class="tb-sources">Sources: ' + allSrcs.join(', ') + (allSrcs.length > 1 ? ' (median)' : '') + '</div>';
+
+  el.innerHTML = html;
+  el.classList.add('show');
+}
+
 /* Hangar chip for the hazard bar - shown Oct through Apr when temps are relevant */
 function hangarChipHTML(){
   const m = state.metars && state.metars.PAJN;
@@ -5611,6 +5804,8 @@ function renderBoard(){
   const per = {};
   STATIONS.forEach(s=> per[s.icao] = stationWorst(s.icao, winHrs));
   window.lastPer = per;
+  /* Temperature banner at top of page */
+  try{ renderTempBanner(); }catch(e){ console.warn('renderTempBanner:', e.message); }
   /* Track ceiling/visibility changes persistently */
   STATIONS.forEach(s2=>{
     const m2 = state.metars[s2.icao];
@@ -6996,6 +7191,7 @@ async function loadNow(){
     if(!state.notams) state.notams = {};
     loadNotams();
     try{ loadHourlyTemp(); }catch(e){ console.warn('loadHourlyTemp deferred:', e.message); setTimeout(()=>{ try{ loadHourlyTemp(); }catch(e2){} }, 5000); }
+    try{ loadDailyForecast(); }catch(e){ console.warn('loadDailyForecast deferred:', e.message); setTimeout(()=>{ try{ loadDailyForecast(); }catch(e2){} }, 5000); }
     if(tfrJson !== null){
       const arr = Array.isArray(tfrJson) ? tfrJson : (tfrJson && tfrJson.tfrList) || [];
       state.tfrs = arr.filter(t=>String(t.state||t.facility||'').toUpperCase().includes('AK') || String(t.facility||'').toUpperCase().includes('ZAN'));
@@ -7647,7 +7843,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b282-taf-notify-fix';
+const BUILD_TAG = 'b283-temp-banner';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -9172,7 +9368,7 @@ function setTvBig(on){
     clearTimeout(t);
     t = setTimeout(()=>{ try{ fitKiosk(); }catch(e){} }, 150);
   });
-  const arm = () => ['afdBody','hazards','alerts','warnbox','jawsBanner','sigmetBanner','sensorBanner','suntrack'].forEach(id=>{
+  const arm = () => ['afdBody','hazards','alerts','warnbox','tempBanner','jawsBanner','sigmetBanner','sensorBanner','suntrack'].forEach(id=>{
     const n = document.getElementById(id); if(n) ro.observe(n);
   });
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', arm) : arm();
