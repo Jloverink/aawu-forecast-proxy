@@ -4451,7 +4451,7 @@ function detectChanges(){
         if((CAT_ORDER[b.cat]??0) > (CAT_ORDER[a.cat]??0)){
           if(b.cat==='IFR' || b.cat==='LIFR'){
             playTone('cat');
-            pushNotify('\u26a0\ufe0f ' + st.name + ' now ' + b.cat, msgs.join(', '), 'cat-'+st.icao+'-'+Date.now());
+            pushNotify('\u26a0\ufe0f ' + st.name + ' now ' + b.cat, msgs.join(', '), 'cat-'+st.icao+'-'+b.cat);
           }
           else if(b.cat==='MVFR') playTone('mvfr');
         }
@@ -4481,7 +4481,7 @@ function detectChanges(){
         if(b.wind!=='caution') flashTitle();
         if(b.wind==='over') playTone('over');
         else if(b.wind==='appr') playTone('mgmt');
-        if(b.wind==='over') pushNotify('\ud83d\udca8 Wind limit: ' + st.name, shortTxt, 'wind-'+st.icao+'-'+Date.now());
+        if(b.wind==='over') pushNotify('\ud83d\udca8 Wind limit: ' + st.name, shortTxt, 'wind-'+st.icao+'-over');
       }
     });
     // external cutoff stations crossing their limits
@@ -5508,7 +5508,23 @@ function trackChanges(icao, cig, vis, wx){
   store[icao] = rec;
   if(dirty){
     try{ localStorage.setItem('wxb_changes', JSON.stringify(store)); }catch(e){}
-    try{ playTone('chg'); }catch(e){}
+    /* Only sound the tone for meaningful changes, not MADIS wobble.
+       Ceiling must move 200+ ft, vis 0.5+ sm, or wx type must change.
+       Also enforce a 3-minute cooldown per station. */
+    const cigBig = rec.cigAt === now && rec.cigFrom !== undefined &&
+      Math.abs((rec.cigTo ?? 99999) - (rec.cigFrom ?? 99999)) >= 200;
+    const visBig = rec.visAt === now && rec.visFrom !== undefined &&
+      Math.abs((rec.visTo ?? 99) - (rec.visFrom ?? 99)) >= 0.5;
+    const wxBig = rec.wxAt === now;
+    if(cigBig || visBig || wxBig){
+      const coolKey = '_chgTone_' + icao;
+      const last = store[coolKey] || 0;
+      if(now - last >= 180000){
+        store[coolKey] = now;
+        try{ localStorage.setItem('wxb_changes', JSON.stringify(store)); }catch(e){}
+        try{ playTone('chg'); }catch(e){}
+      }
+    }
   }
   return rec;
 }
@@ -7631,7 +7647,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b281-zone-frat';
+const BUILD_TAG = 'b282-taf-notify-fix';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -7994,17 +8010,35 @@ function tafSeen(){
 function noteTafChanges(){
   const seen = tafSeen();
   let dirty = false;
+  const changed = [];
   STATIONS.forEach(st=>{
     const t = state.tafs[st.icao];
     if(!t || !t.rawTAF) return;
     const prev = seen[st.icao];
     if(!prev || prev.raw !== t.rawTAF){
-      /* First sight of a station is not an amendment, so it is recorded without announcing. */
-      seen[st.icao] = {raw:t.rawTAF, at: prev ? Date.now() : 0, issue:t.issueTime || null};
+      const isAmend = prev && prev.raw;  /* first sight is not an amendment */
+      seen[st.icao] = {raw:t.rawTAF, at: isAmend ? Date.now() : 0, issue:t.issueTime || null};
       dirty = true;
+      if(isAmend) changed.push(st);
     }
   });
   if(dirty){ try{ localStorage.setItem('wxb_tafseen', JSON.stringify(seen)); }catch(e){} }
+  /* Alert, tone, and push for genuine TAF amendments */
+  if(changed.length){
+    changed.forEach(st=>{
+      const t = state.tafs[st.icao];
+      const amd = t && /\bTAF (AMD|COR)\b/.test(String(t.rawTAF||''));
+      const label = amd ? 'TAF AMENDED' : 'TAF UPDATED';
+      state.alerts.unshift({t:Date.now(), icao:st.icao, name:st.name,
+        worse:false, better:false, msg:label});
+      pushNotify('📡 ' + st.name + ' ' + label,
+        (t.rawTAF||'').slice(0,140), 'taf-'+st.icao);
+    });
+    if(changed.some(st=>alertsAllowed(st.icao))){
+      playTone('taf');
+      flashTitle();
+    }
+  }
 }
 /* The forecast that is actually being broadcast right now, on the collapsed row rather than
    only inside the expanded window. Kept to visibility and the controlling layer so it costs
@@ -10482,9 +10516,10 @@ const ALERT_KINDS = {
   over: {label:'Wind over company limit',           tone:[[698,0],[880,0.12],[1046,0.24]], gain:0.20},
   cut:  {label:'Cutoff station over its limit',     tone:[[1046,0],[784,0.13],[1046,0.26]],gain:0.18},
   chg:  {label:'Ceiling or visibility change',      tone:[[880,0],[660,0.10]],             gain:0.12},
+  taf:  {label:'TAF updated or amended',            tone:[[523,0],[659,0.12],[784,0.24]], gain:0.15},
 };
 let sndOn = false;
-let alertPrefs = {cat:true, mvfr:false, mgmt:true, over:true, cut:true, chg:true};
+let alertPrefs = {cat:true, mvfr:false, mgmt:true, over:true, cut:true, chg:true, taf:true};
 try{
   sndOn = localStorage.getItem('wxb_snd')==='1';
   const sp = JSON.parse(localStorage.getItem('wxb_snd_kinds')||'null');
