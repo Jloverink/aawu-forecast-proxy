@@ -5423,6 +5423,7 @@ async function loadHourlyTemp(){
       icon: p.icon || '',
     }));
     state.nwsHourlyAt = Date.now();
+    try{ renderTempBanner(); }catch(e2){}
   }catch(e){ /* hourly forecast is best-effort */ }
 }
 function overnightLow(){
@@ -5467,6 +5468,7 @@ async function loadDailyForecast(){
       t: new Date(p.startTime).getTime(),
     }));
     state.nwsDailyAt = Date.now();
+    try{ renderTempBanner(); }catch(e2){}
   }catch(e){}
 }
 
@@ -5521,11 +5523,15 @@ function renderTempBanner(){
   let curTempF = null;
   if(m && m.temp !== null && m.temp !== undefined){
     curTempF = Math.round(m.temp * 9/5 + 32);
-    /* Current temp is a data point for both high and low */
+    /* Current temp counts toward the high (it's already been reached).
+       Only count it as a low source during overnight hours (9pm-9am AKT)
+       when it reflects actual overnight conditions, not afternoon warmth. */
     highs.push(curTempF);
     highSrcs.push('METAR');
-    lows.push(curTempF);
-    lowSrcs.push('METAR');
+    if(akHour >= 21 || akHour < 9){
+      lows.push(curTempF);
+      lowSrcs.push('METAR');
+    }
   }
 
   if(!highs.length && !lows.length){ el.classList.remove('show'); return; }
@@ -5621,6 +5627,17 @@ function renderTempBanner(){
 
   el.innerHTML = html;
   el.classList.add('show');
+
+  /* Push notification for frost danger */
+  if(frostClass === 'danger'){
+    pushNotify('❄️ FROST WARNING — HANGAR AIRCRAFT',
+      'Forecast low ' + checkTemp + '°F. Hangar all aircraft tonight.',
+      'frost-danger-' + new Date().toISOString().slice(0,10));
+  } else if(frostClass === 'caution'){
+    pushNotify('❄️ Frost Watch',
+      'Forecast low ' + checkTemp + '°F, approaching hangar threshold.',
+      'frost-watch-' + new Date().toISOString().slice(0,10));
+  }
 }
 
 /* Hangar chip for the hazard bar - shown Oct through Apr when temps are relevant */
@@ -7843,7 +7860,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b283-temp-banner';
+const BUILD_TAG = 'b284-frost-fix';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
