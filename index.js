@@ -5423,9 +5423,10 @@ const NWS_PAJN_HOURLY = 'https://api.weather.gov/gridpoints/AJK/178,72/forecast/
 async function loadHourlyTemp(){
   try{
     const r = await fetch(NWS_PAJN_HOURLY, {headers:{accept:'application/geo+json'}});
-    if(!r.ok) return;
+    if(!r.ok){ loadNWSMapClick(); return; }
     const j = await r.json();
     const periods = (j.properties && j.properties.periods) || [];
+    if(!periods.length){ loadNWSMapClick(); return; }
     state.nwsHourly = periods.slice(0, 36).map(p=>({
       t: new Date(p.startTime).getTime(),
       tempF: p.temperature,
@@ -5436,8 +5437,175 @@ async function loadHourlyTemp(){
     }));
     state.nwsHourlyAt = Date.now();
     try{ renderTempBanner(); }catch(e2){}
-  }catch(e){ /* hourly forecast is best-effort */ }
+  }catch(e){ loadNWSMapClick(); }
 }
+
+/* ---- NWS MapClick forecast page fallback ----
+   When api.weather.gov JSON fails (common for Alaska gridpoints), parse the
+   standard forecast page at forecast.weather.gov/MapClick.php which serves
+   the same data through a more reliable endpoint.
+   Populates state.nwsDaily with named periods (Today, Tonight, Saturday...). */
+const NWS_MAPCLICK_URL = 'https://forecast.weather.gov/MapClick.php?lon=-134.58045959472656&lat=58.34889763596584';
+var _mapClickLoading = false;
+async function loadNWSMapClick(){
+  if(_mapClickLoading) return;
+  if(state.nwsDaily && state.nwsDaily.length && state.nwsHourly && state.nwsHourly.length) return;
+  _mapClickLoading = true;
+  try{
+    var html = await fetchText(NWS_MAPCLICK_URL);
+    if(!html){ _mapClickLoading = false; return; }
+    var parsed = parseNWSMapClick(html);
+    if(parsed.daily.length && (!state.nwsDaily || !state.nwsDaily.length)){
+      state.nwsDaily = parsed.daily;
+      state.nwsDailyAt = Date.now();
+      state.nwsDailySrc = 'mapclick';
+    }
+    if(parsed.hourly.length && (!state.nwsHourly || !state.nwsHourly.length)){
+      state.nwsHourly = parsed.hourly;
+      state.nwsHourlyAt = Date.now();
+      state.nwsHourlySrc = 'mapclick';
+    }
+    try{ renderTempBanner(); }catch(e2){}
+  }catch(e){ console.warn('NWS MapClick fallback:', e.message); }
+  _mapClickLoading = false;
+}
+
+function parseNWSMapClick(html){
+  var parser = new DOMParser();
+  var doc = parser.parseFromString(html, 'text/html');
+  var daily = [], hourly = [];
+
+  /* --- Strategy 1: tombstone containers (icon forecast row) --- */
+  var tombs = doc.querySelectorAll('.tombstone-container');
+  if(!tombs.length){
+    /* Some NWS page variants use li.forecast-tombstone instead */
+    tombs = doc.querySelectorAll('li.forecast-tombstone');
+  }
+  for(var i = 0; i < tombs.length && daily.length < 14; i++){
+    var nameEl = tombs[i].querySelector('.period-name');
+    var tempEl = tombs[i].querySelector('.temp');
+    var descEl = tombs[i].querySelector('.short-desc');
+    /* Fallback: try img alt text for description */
+    var imgEl = tombs[i].querySelector('img');
+    if(!nameEl || !tempEl) continue;
+
+    var name = (nameEl.textContent || '').trim();
+    var tempText = (tempEl.textContent || '').trim();
+    var desc = descEl ? (descEl.textContent || '').trim()
+             : (imgEl ? (imgEl.getAttribute('alt') || '').replace(/^[^:]+:\s*/, '') : '');
+
+    var isDaytime = /high/i.test(tempText);
+    var tempMatch = tempText.match(/(\d+)/);
+    var tempF = tempMatch ? parseInt(tempMatch[1]) : null;
+    if(tempF === null) continue;
+
+    daily.push({
+      name: name,
+      tempF: tempF,
+      isDaytime: isDaytime,
+      sky: desc,
+      detail: '',
+      wind: '',
+      windDir: '',
+      icon: imgEl ? (imgEl.getAttribute('src') || '') : '',
+      t: Date.now() + i * 12 * 3600000,
+    });
+  }
+
+  /* --- Strategy 2: parse detailed forecast text as fallback --- */
+  if(!daily.length){
+    var text = doc.body ? doc.body.textContent : '';
+    /* NWS detailed forecast lines: "Today: Patchy fog... high near 51." */
+    var re = /\b(Today|This Afternoon|Tonight|(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day(?:\s+Night)?|(?:Columbus|Veterans|Labor|Memorial|Independence|Thanksgiving)\s+Day(?:\s+Night)?)\s+((?:[^.]*?(?:high|low)\s+(?:near|around|of)\s+(\d+))[^.]*\.)/gi;
+    var m;
+    while((m = re.exec(text)) !== null && daily.length < 14){
+      var pName = m[1];
+      var pDetail = m[2];
+      var pTemp = parseInt(m[3]);
+      var isDay = /high/i.test(pDetail);
+      /* Extract wind from detail text */
+      var wm = pDetail.match(/(north|south|east|west|[NS][EW]?)\w*\s+wind\s+(?:around\s+)?(\d+)/i);
+      daily.push({
+        name: pName, tempF: pTemp, isDaytime: isDay,
+        sky: pDetail.split('.')[0] || '',
+        detail: pDetail,
+        wind: wm ? wm[2] + ' mph' : '',
+        windDir: wm ? wm[1] : '',
+        icon: '',
+        t: Date.now() + daily.length * 12 * 3600000,
+      });
+    }
+  }
+
+  /* --- Fill detailed text into tombstone-parsed periods --- */
+  if(daily.length){
+    var detailEls = doc.querySelectorAll('.row-forecast .forecast-text, .col-sm-10.forecast-text');
+    for(var i = 0; i < detailEls.length && i < daily.length; i++){
+      daily[i].detail = (detailEls[i].textContent || '').trim();
+      /* Extract wind info from detail */
+      if(!daily[i].wind){
+        var wm = daily[i].detail.match(/(north|south|east|west|[NS][EW]?)\w*\s+wind\s+(?:around\s+)?(\d+)/i);
+        if(wm){ daily[i].wind = wm[2] + ' mph'; daily[i].windDir = wm[1]; }
+      }
+    }
+  }
+
+  /* --- Synthesize pseudo-hourly from daily periods for overnight low calc --- */
+  if(daily.length >= 2){
+    for(var i = 0; i < daily.length && i < 4; i++){
+      var p = daily[i];
+      /* Each named period spans roughly 12 hours; create 3 data points */
+      for(var h = 0; h < 3; h++){
+        hourly.push({
+          t: p.t + h * 4 * 3600000,
+          tempF: p.tempF,
+          wind: p.wind ? parseInt(p.wind) || null : null,
+          windDir: p.windDir || null,
+          sky: p.sky || '',
+          icon: p.icon || '',
+        });
+      }
+    }
+  }
+
+  return {daily: daily, hourly: hourly};
+}
+
+/* ---- Wunderground PWS backup current conditions ----
+   KAKJUNEA112 (Fuego station, East Valley) near the airport.
+   Supplements PAJN METAR with a nearby ground-level observation. */
+const WX_PWS_URL = 'https://api.weather.com/v2/pws/observations/current?stationId=KAKJUNEA112&format=json&units=e&apiKey=6532d6454b8aa370768e63d6ba5a832e';
+async function loadWundergroundPWS(){
+  try{
+    var r = await fetchText(WX_PWS_URL);
+    if(!r) return;
+    var j = JSON.parse(r);
+    var obs = j.observations && j.observations[0];
+    if(!obs) return;
+    var imp = obs.imperial || {};
+    state.wxPWS = {
+      stationId: obs.stationID || 'KAKJUNEA112',
+      name: obs.neighborhood || 'East Valley',
+      tempF: imp.temp,
+      dewptF: imp.dewpt,
+      humidity: obs.humidity,
+      windSpeedMph: imp.windSpeed,
+      windGustMph: imp.windGust,
+      windDir: obs.winddir,
+      pressureIn: imp.pressure,
+      precipRateIn: imp.precipRate,
+      precipTotalIn: imp.precipTotal,
+      solarRad: obs.solarRadiation,
+      uv: obs.uv,
+      obsTime: obs.obsTimeLocal || '',
+      lat: obs.lat,
+      lon: obs.lon,
+    };
+    state.wxPWSAt = Date.now();
+    try{ renderTempBanner(); }catch(e2){}
+  }catch(e){ console.warn('Wunderground PWS:', e.message); }
+}
+
 function overnightLow(){
   if(!state.nwsHourly || !state.nwsHourly.length) return null;
   const now = Date.now();
@@ -5465,9 +5633,10 @@ const NWS_PAJN_FORECAST = 'https://api.weather.gov/gridpoints/AJK/178,72/forecas
 async function loadDailyForecast(){
   try{
     const r = await fetch(NWS_PAJN_FORECAST, {headers:{accept:'application/geo+json'}});
-    if(!r.ok) return;
+    if(!r.ok){ loadNWSMapClick(); return; }
     const j = await r.json();
     const periods = (j.properties && j.properties.periods) || [];
+    if(!periods.length){ loadNWSMapClick(); return; }
     state.nwsDaily = periods.slice(0, 8).map(p=>({
       name: p.name || '',
       tempF: p.temperature,
@@ -5481,7 +5650,7 @@ async function loadDailyForecast(){
     }));
     state.nwsDailyAt = Date.now();
     try{ renderTempBanner(); }catch(e2){}
-  }catch(e){}
+  }catch(e){ loadNWSMapClick(); }
 }
 
 /* Temperature banner - pulls from NWS daily, NWS hourly, and current METAR to
@@ -7362,6 +7531,9 @@ async function loadNow(){
     loadNotams();
     try{ loadHourlyTemp(); }catch(e){ console.warn('loadHourlyTemp deferred:', e.message); setTimeout(()=>{ try{ loadHourlyTemp(); }catch(e2){} }, 5000); }
     try{ loadDailyForecast(); }catch(e){ console.warn('loadDailyForecast deferred:', e.message); setTimeout(()=>{ try{ loadDailyForecast(); }catch(e2){} }, 5000); }
+    try{ loadWundergroundPWS(); }catch(e){}
+    /* Safety net: if NWS API has not delivered after 12s, try MapClick page */
+    setTimeout(function(){ if((!state.nwsDaily || !state.nwsDaily.length) && (!state.nwsHourly || !state.nwsHourly.length)){ try{ loadNWSMapClick(); }catch(e){} } }, 12000);
     if(tfrJson !== null){
       const arr = Array.isArray(tfrJson) ? tfrJson : (tfrJson && tfrJson.tfrList) || [];
       state.tfrs = arr.filter(t=>String(t.state||t.facility||'').toUpperCase().includes('AK') || String(t.facility||'').toUpperCase().includes('ZAN'));
@@ -8013,7 +8185,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b289-fix-smartquotes';
+const BUILD_TAG = 'b290-mapclick-pws';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.

@@ -21,6 +21,8 @@ const ALLOW = [
   'mxak.org',
   'mxak.cablecar.dev',
   'worldtimeapi.org',
+  'api.weather.com',
+  'stationdata.wunderground.com',
 ];
 
 module.exports = async (req, res) => {
