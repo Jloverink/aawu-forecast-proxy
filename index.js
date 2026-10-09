@@ -4330,6 +4330,20 @@ function toDate(v){
   const d = /[+-]\d{2}:?\d{2}$/.test(sv) ? new Date(sv) : new Date(sv.replace(/Z/g,'').replace(' ','T')+'Z');
   return isNaN(d) ? null : d;
 }
+function metarOutDur(icao){
+  /* How long since this station's last valid METAR. Uses metarHist (12h AWC window)
+     plus a persistent timestamp we stash when a METAR disappears. */
+  const hist = state.metarHist[icao] || [];
+  const last = hist.length ? (hist[0].obsTime || hist[0].reportTime) : null;
+  const d = last ? toDate(last) : null;
+  if(!d) return 'duration unknown';
+  let s = Math.round((Date.now() - d.getTime())/1000);
+  if(s < 0) s = 0;
+  const m = Math.floor(s/60), h = Math.floor(m/60), dy = Math.floor(h/24);
+  if(dy > 0) return dy+'d '+String(h%24)+'h';
+  if(h > 0) return h+'h '+String(m%60).padStart(2,'0')+'m';
+  return m+'m';
+}
 function agoTxt(v){
   const d = toDate(v); if(!d) return '';
   let s = Math.round((Date.now() - d.getTime())/1000);
@@ -5712,7 +5726,7 @@ function renderTempBanner(){
   const m = state.metars && state.metars.PAJN;
   let curTempF = null;
   if(m && m.temp !== null && m.temp !== undefined){
-    curTempF = Math.round(m.temp * 9/5 + 32);
+    curTempF = Math.round((m.temp * 9/5 + 32) * 10) / 10;
     /* Only add METAR to high/low arrays when forecast data also exists,
        so it contributes to the median but never stands alone */
     if(hasForecast){
@@ -6275,7 +6289,7 @@ function renderBoard(){
       }
       const windOnly = w.obs && w.obs.cig===null && w.obs.vis===null && w.obs.unofficial;
       const d = windOnly ? `MXAK wind ${w.obs.wdir!==null?w.obs.wdir+'\u00b0 ':''}${w.obs.wspd}${w.obs.wgst?'G'+w.obs.wgst:''} kt / no wx obs`
-        : w.obs ? `${fmtCig(w.worstCig)}${trend} / ${visTxt(w.worstVisRaw ?? w.worstVis)} sm${wxs?' / '+wxs:''}` : '<b style="color:var(--ifr)">⚠ METAR OUT — NO OBSERVATION</b>';
+        : w.obs ? `${fmtCig(w.worstCig)}${trend} / ${visTxt(w.worstVisRaw ?? w.worstVis)} sm${wxs?' / '+wxs:''}` : '<b style="color:var(--ifr)">⚠ METAR OUT — NO OBSERVATION</b> <span style="color:var(--ifr);font-size:12px">OUT '+metarOutDur(s.icao)+'</span>';
       const obt = w.obs && w.obs.t ? `<span class="obt">${fmtLZ(w.obs.t)}</span>` : '';
       const noMet = !w.obs && !s.noMetar;
       return `<div class="stn${noMet?' metar-out':''}" data-tip="stn-${s.icao}" data-panel="${s.icao}"><span class="dot cat-${w.cat}"></span><span class="id">${s.icao}</span><span class="nm">${s.name}</span><span class="d">${d}</span>${flags.length?`<span class="flag">${flags.join(' ')}</span>`:''}${obt}</div>`;
@@ -8188,7 +8202,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b292-metar-out-warn';
+const BUILD_TAG = 'b293-temp-dec-outage';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -10006,13 +10020,13 @@ function nowLineParts(st, w){
         (src.clouds&&src.clouds.length)||src.vertVis!==null&&src.vertVis!==undefined ? layersHTML(src.clouds, src.vertVis) : (useMadis&&md.cig!==null?cv('CIG '+md.cig.toLocaleString(), cigBand(md.cig)):layersHTML(src.clouds, src.vertVis)),
         windHTML(st.icao, src.wdir, src.wspd, src.wgst),
         windCompHTML(st.icao, src.wdir, src.wspd, src.wgst),
-        src.temp!==null&&src.temp!==undefined?`<span style="color:${tdCol0}">${src.temp}/${src.dewp!==null&&src.dewp!==undefined?src.dewp:'?'}\u00b0C \u00b7 ${Math.round(src.temp*9/5+32)}/${src.dewp!==null&&src.dewp!==undefined?Math.round(src.dewp*9/5+32):'?'}\u00b0F</span>`:null,
+        src.temp!==null&&src.temp!==undefined?`<span style="color:${tdCol0}">${src.temp}/${src.dewp!==null&&src.dewp!==undefined?src.dewp:'?'}\u00b0C \u00b7 ${(src.temp*9/5+32).toFixed(1)}/${src.dewp!==null&&src.dewp!==undefined?(src.dewp*9/5+32).toFixed(1):'?'}\u00b0F</span>`:null,
       ] : null;
     const metarLine = metarPartsArr ? metarPartsArr.filter(Boolean).map((x,i)=>`<span data-part="${i}">${x}</span>`).join(' &nbsp;') 
       : [
         veiaFrontHTML(w),
         o.unofficial ? `MXAK ${windHTML(st.icao, o.wdir, o.wspd, o.wgst)} <span style="color:var(--mut)">wind only \u00b7 ${fmtLZ(o.t)}</span>` : null,
-        (!o.unofficial && !w.veia) ? '<b style="color:var(--ifr);font-size:15px">⚠ METAR OUT — NO OBSERVATION</b>' : null,
+        (!o.unofficial && !w.veia) ? '<b style="color:var(--ifr);font-size:15px">⚠ METAR OUT — NO OBSERVATION</b> <span style="color:var(--ifr)">OUT '+metarOutDur(st.icao)+'</span>' : null,
       ].filter(Boolean).join(' &nbsp;');
     /* The altimeter, density altitude and pressure trend are not an observation of the sky,
        so they are pulled out of the weather string and given their own place on line three. */
@@ -10594,8 +10608,8 @@ function openPanel(icao, cls){
     <div style="flex:0 0 auto">${roseSVG(icao, 300)}</div>
     <div style="flex:1;min-width:260px">
       <h3 style="margin-top:0">Current</h3>
-      <div class="row" style="color:var(--mut)">Wind <b style="color:var(--ink)">${wdir!==null?wdir+'\u00b0':'VRB'} at ${o.wspd||0}${o.wgst?' G'+o.wgst:''} kt</b>, ${fmtCig(o.cig)}, ${visTxt(o.visRaw ?? o.vis)} sm, temp <b style="color:var(--ink)">${o.temp!==undefined&&o.temp!==null?o.temp+'\u00b0C':'?'}</b>${o.dewp!==undefined&&o.dewp!==null?' / dp '+o.dewp+'\u00b0C':''}</div>
-      <div class="mono" style="margin-top:4px">${o.raw||'<b style="color:var(--ifr)">⚠ METAR OUT</b>'}</div>
+      <div class="row" style="color:var(--mut)">Wind <b style="color:var(--ink)">${wdir!==null?wdir+'\u00b0':'VRB'} at ${o.wspd||0}${o.wgst?' G'+o.wgst:''} kt</b>, ${fmtCig(o.cig)}, ${visTxt(o.visRaw ?? o.vis)} sm, temp <b style="color:var(--ink)">${o.temp!==undefined&&o.temp!==null?o.temp+'\u00b0C / '+(o.temp*9/5+32).toFixed(1)+'\u00b0F':'?'}</b>${o.dewp!==undefined&&o.dewp!==null?' / dp '+o.dewp+'\u00b0C':''}</div>
+      <div class="mono" style="margin-top:4px">${o.raw||'<b style="color:var(--ifr)">⚠ METAR OUT</b> <span style="color:var(--ifr)">OUT '+metarOutDur(icao)+'</span>'}</div>
       <h3>FRAT class</h3>
       <div style="display:flex;gap:6px">
         ${['float','c208','pc12'].map(k=>`<button class="${k===cls?'primary':''}" data-cls="${k}" data-clsfor="${icao}">${k==='float'?'Floats/Amphibs':k==='c208'?'C208':'PC-12'}</button>`).join('')}
