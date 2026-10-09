@@ -527,10 +527,22 @@ body.kiosk #fatop{display:none}
 #clockbox .ckt{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:17px;font-weight:700;
   color:#ffd08a;letter-spacing:1px;text-shadow:0 0 8px rgba(242,169,59,.45)}
 #clockbox .ckl{font-family:var(--mono);font-size:11px;color:var(--mut);font-weight:700}
-body.kiosk{padding-top:66px}
-body.kiosk #clockbox{top:8px;bottom:auto;right:auto;left:50%;transform:translateX(-50%);gap:34px;padding:4px 22px}
-body.kiosk #clockbox .ckt{font-size:44px;letter-spacing:2px}
-body.kiosk #clockbox .ckl{font-size:18px}
+body.kiosk{padding-top:54px}
+body.kiosk #tvInfoBar{display:flex;position:fixed;top:0;left:0;right:0;z-index:80;
+  align-items:center;justify-content:center;gap:24px;padding:4px 16px;
+  background:#0a1018;border-bottom:1px solid var(--line);height:50px}
+body.kiosk #clockbox{position:static;transform:none;gap:20px;padding:0;
+  background:none;border:none;box-shadow:none;border-radius:0;backdrop-filter:none;z-index:auto}
+body.kiosk #clockbox .ckt{font-size:28px;letter-spacing:1px}
+body.kiosk #clockbox .ckl{font-size:14px}
+body.kiosk #tvSunInfo{display:flex;align-items:center;gap:14px;font-family:var(--mono);font-size:13px;color:var(--mut)}
+body.kiosk #tvSunInfo .sunval{color:#ffd76a;font-weight:700;font-size:14px}
+body.kiosk #tvSunInfo .sunlbl{font-size:10px;color:var(--mut);text-transform:uppercase;letter-spacing:0.5px}
+body.kiosk #tvTempStrip{display:flex;align-items:center;gap:12px;font-family:var(--disp)}
+body.kiosk #tvTempStrip .tvt-val{font-weight:800;font-size:22px}
+body.kiosk #tvTempStrip .tvt-lbl{font-size:9px;text-transform:uppercase;letter-spacing:0.5px;color:var(--mut)}
+body.kiosk #tvTempStrip .tvt-frost{font-weight:700;font-size:13px;padding:2px 10px;border-radius:4px;animation:frostPulse 2s ease-in-out infinite}
+body.kiosk #tempBanner{display:none !important}
 /* METAR and MADIS in shared columns, one above the other */
 .obsgrid{display:grid;grid-template-columns:max-content max-content max-content max-content minmax(0,1fr);
   column-gap:16px;row-gap:3px;align-items:center;flex:1 1 100%;width:100%}
@@ -5375,8 +5387,8 @@ function pushNotify(title, body, tag){
    Uses current METAR/MADIS plus the NWS hourly forecast for overnight lows. */
 
 const HANGAR_RULES = {
-  clearThreshF: 38,   // hangar at or below this temp when sky is clear/few
-  cloudyThreshF: 36,  // hangar at or below this temp when sky is SCT/BKN/OVC
+  clearThreshF: 37,   // hangar at or below this temp when sky is clear/few
+  cloudyThreshF: 35,  // hangar at or below this temp when sky is SCT/BKN/OVC
   doorCautionKt: 26,  // ~30 mph
   doorClosedKt: 35,   // ~40 mph
 };
@@ -5570,7 +5582,7 @@ function renderTempBanner(){
   if(checkTemp !== null){
     /* Use overnight low for frost check, with sky condition */
     const clearNight = /clear|sunny|few|mostly clear/i.test(nightSky);
-    const thresh = clearNight ? 38 : 36;
+    const thresh = clearNight ? HANGAR_RULES.clearThreshF : HANGAR_RULES.cloudyThreshF;
     if(checkTemp <= thresh){
       frostClass = 'danger';
       frostMsg = '❄️ FROST WARNING — HANGAR AIRCRAFT — Low ' + checkTemp + '°F' + (clearNight ? ' with clear skies (threshold ' + thresh + '°F)' : ' (threshold ' + thresh + '°F)');
@@ -5628,6 +5640,11 @@ function renderTempBanner(){
   el.innerHTML = html;
   el.classList.add('show');
 
+  /* Update TV mode info bar if in kiosk mode */
+  if(document.body.classList.contains('kiosk')){
+    renderTvInfoBar(curTempF, highMed, lowMed, frostClass, frostMsg, checkTemp);
+  }
+
   /* Push notification for frost danger */
   if(frostClass === 'danger'){
     pushNotify('❄️ FROST WARNING — HANGAR AIRCRAFT',
@@ -5638,6 +5655,97 @@ function renderTempBanner(){
       'Forecast low ' + checkTemp + '°F, approaching hangar threshold.',
       'frost-watch-' + new Date().toISOString().slice(0,10));
   }
+}
+
+/* TV mode info bar: compact temp + sunrise/sunset grouped with the clock */
+function renderTvInfoBar(curTempF, highMed, lowMed, frostClass, frostMsg, checkTemp){
+  let bar = document.getElementById('tvInfoBar');
+  if(!bar){
+    bar = document.createElement('div');
+    bar.id = 'tvInfoBar';
+    document.body.prepend(bar);
+  }
+  /* Move clockbox into the bar if it's not already there */
+  const clock = document.getElementById('clockbox');
+  if(clock && clock.parentNode !== bar) bar.appendChild(clock);
+
+  /* Temperature strip */
+  function tempColor(f){
+    if(f === null) return 'var(--ink)';
+    if(f <= 32) return '#8eb8ff';
+    if(f <= 38) return '#6ca8f0';
+    if(f <= 45) return 'var(--amber)';
+    return 'var(--vfr)';
+  }
+  let tempHTML = '';
+  if(curTempF !== null){
+    tempHTML += '<div style="text-align:center"><div class="tvt-lbl">Now</div><div class="tvt-val" style="color:' + tempColor(curTempF) + '">' + curTempF + '°</div></div>';
+  }
+  if(highMed !== null){
+    tempHTML += '<div style="text-align:center"><div class="tvt-lbl">High</div><div class="tvt-val" style="color:' + tempColor(highMed) + '">' + highMed + '°</div></div>';
+  }
+  if(lowMed !== null){
+    tempHTML += '<div style="text-align:center"><div class="tvt-lbl">Low</div><div class="tvt-val" style="color:' + tempColor(lowMed) + '">' + lowMed + '°</div></div>';
+  }
+  if(frostClass === 'danger'){
+    tempHTML += '<div class="tvt-frost" style="background:rgba(226,87,75,0.25);color:var(--ifr);border:1px solid var(--ifr)">❄️ HANGAR</div>';
+  } else if(frostClass === 'caution'){
+    tempHTML += '<div class="tvt-frost" style="background:rgba(233,184,36,0.15);color:var(--amber);border:1px solid var(--amber)">❄️ FROST WATCH</div>';
+  }
+
+  let tempEl = document.getElementById('tvTempStrip');
+  if(!tempEl){
+    tempEl = document.createElement('div');
+    tempEl.id = 'tvTempStrip';
+    bar.appendChild(tempEl);
+  }
+  tempEl.innerHTML = tempHTML;
+
+  /* Sunrise/sunset */
+  try{
+    const jnu = typeof STATIONS !== 'undefined' && STATIONS.find(s=>s.icao==='PAJN');
+    if(jnu){
+      const now = new Date();
+      const off = sunAt(jnu.lat, jnu.lon, now, 90.833);
+      if(off){
+        const fmtT = d => {
+          try{ return new Intl.DateTimeFormat('en-US',{timeZone:'America/Juneau',hour:'numeric',minute:'2-digit',hour12:true}).format(d); }
+          catch(e){ return ''; }
+        };
+        const sr = fmtT(off.rise), ss = fmtT(off.set);
+        const nowMs = now.getTime();
+        const dayMs = off.set.getTime() - off.rise.getTime();
+        const dayH = Math.floor(dayMs/3600000), dayM = Math.round((dayMs%3600000)/60000);
+        let remaining = '';
+        if(nowMs >= off.rise.getTime() && nowMs <= off.set.getTime()){
+          const leftMs = off.set.getTime() - nowMs;
+          const lH = Math.floor(leftMs/3600000), lM = Math.round((leftMs%3600000)/60000);
+          remaining = '<span style="color:#ffd76a;font-size:12px">' + (lH ? lH+'h ':'') + lM + 'm left</span>';
+        } else {
+          remaining = '<span style="color:var(--mut);font-size:12px">night</span>';
+        }
+
+        let sunEl = document.getElementById('tvSunInfo');
+        if(!sunEl){
+          sunEl = document.createElement('div');
+          sunEl.id = 'tvSunInfo';
+          bar.appendChild(sunEl);
+        }
+        sunEl.innerHTML =
+          '<div style="text-align:center"><div class="sunlbl">☀ Rise</div><div class="sunval">' + sr + '</div></div>' +
+          '<div style="text-align:center"><div class="sunlbl">☀ Set</div><div class="sunval">' + ss + '</div></div>' +
+          '<div style="text-align:center">' + remaining + '</div>';
+      }
+    }
+  }catch(e){}
+}
+function removeTvInfoBar(){
+  const bar = document.getElementById('tvInfoBar');
+  if(!bar) return;
+  /* Move clock back to body before removing bar */
+  const clock = document.getElementById('clockbox');
+  if(clock && clock.parentNode === bar) document.body.appendChild(clock);
+  bar.remove();
 }
 
 /* Hangar chip for the hazard bar - shown Oct through Apr when temps are relevant */
@@ -7860,7 +7968,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b284-frost-fix';
+const BUILD_TAG = 'b285-tv-infobar';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -10519,6 +10627,7 @@ if(qp.get('tv') === '1'){
   document.body.classList.add('kiosk');
   setTimeout(()=>{
     document.getElementById('kioskExit').classList.add('show');
+    try{ renderTempBanner(); }catch(err){}
     try{ document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(()=>{}); }catch(err){}
     setTimeout(fitKiosk, 500);
   }, 300);
@@ -10542,6 +10651,7 @@ document.getElementById('kioskBtn').addEventListener('click', e=>{
   e.stopPropagation();
   document.body.classList.add('kiosk');
   document.getElementById('kioskExit').classList.add('show');
+  try{ renderTempBanner(); }catch(err){}
   try{ document.documentElement.requestFullscreen && document.documentElement.requestFullscreen().catch(()=>{}); }catch(err){}
   setTimeout(fitKiosk, 120);
   setTimeout(()=>{ fitKiosk(); tvPageSync(); }, 700);
@@ -10550,6 +10660,7 @@ document.getElementById('kioskExit').addEventListener('click', e=>{
   e.stopPropagation();
   document.body.classList.remove('kiosk');
   document.getElementById('kioskExit').classList.remove('show');
+  removeTvInfoBar();
   try{ document.exitFullscreen && document.fullscreenElement && document.exitFullscreen(); }catch(err){}
   fitKiosk(); tvPageSync();
 });
@@ -10557,6 +10668,7 @@ document.addEventListener('keydown', e=>{
   if(e.key === 'Escape' && document.body.classList.contains('kiosk')){
     document.body.classList.remove('kiosk');
     document.getElementById('kioskExit').classList.remove('show');
+    removeTvInfoBar();
     fitKiosk();
   }
 });
