@@ -8185,7 +8185,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b290-mapclick-pws';
+const BUILD_TAG = 'b291-taf-notify';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -8532,6 +8532,36 @@ function renderSun(){
 }
 
 /* ================= MASTER STATION TABLE ================= */
+/* ---- Decoded TAF for push notifications ----
+   Builds a multi-line plain-text summary of the TAF periods with flight categories,
+   ceiling, visibility, weather, and wind so the notification is readable at a glance
+   without opening the app. */
+function decodeTafNotify(t){
+  if(!t || !(t.fcsts||[]).length) return (t && t.rawTAF || '').slice(0, 140);
+  var lines = [];
+  (t.fcsts||[]).forEach(function(f){
+    var lbl = (f.fcstChange || 'BASE') + (f.probability ? ' P' + f.probability : '');
+    var time = fmtLZ(f.timeFrom) + '-' + fmtLZ(f.timeTo);
+    var cg = ceilingOf(f.clouds, f.vertVis);
+    var vis = parseVis(f.visib);
+    var cat = flightCat(cg, vis);
+    var parts = [cat];
+    if(cg !== null) parts.push('cig ' + (cg === 0 ? '0' : cg.toLocaleString()) + 'ft');
+    if(vis !== null) parts.push(visTxt(f.visib) + 'sm');
+    var wx = wxTokens(f.wxString).map(wxWord).join(', ');
+    if(wx) parts.push(wx);
+    if(f.wspd || f.wgst){
+      var dir = (f.wdir !== null && f.wdir !== undefined)
+        ? String(Math.round(((f.wdir - MAGVAR) + 360) % 360)).padStart(3, '0') + '°M'
+        : 'VRB';
+      var wnd = dir + ' ' + (f.wspd || 0) + (f.wgst ? 'G' + f.wgst : '') + 'kt';
+      parts.push(wnd);
+    }
+    lines.push(lbl + ' ' + time + ': ' + parts.join(', '));
+  });
+  return lines.join('\n');
+}
+
 /* ---- TAF freshness and what is in force right now ----
    A TAF quietly replacing itself is easy to miss, and a TEMPO that has just appeared is
    exactly the thing a dispatcher needs to notice. The raw text of each TAF is remembered
@@ -8570,7 +8600,7 @@ function noteTafChanges(){
       state.alerts.unshift({t:Date.now(), icao:st.icao, name:st.name,
         worse:false, better:false, msg:label});
       pushNotify('📡 ' + st.name + ' ' + label,
-        (t.rawTAF||'').slice(0,140), 'taf-'+st.icao);
+        decodeTafNotify(t), 'taf-'+st.icao);
     });
     if(changed.some(st=>alertsAllowed(st.icao))){
       playTone('taf');
