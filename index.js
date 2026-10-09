@@ -5417,10 +5417,178 @@ function hangarDoorStatus(wkt){
   return {status:'ok', label:`Doors OK: ${wkt} kt / ${mph} mph`, col:'var(--mvfr)'};
 }
 
-/* NWS hourly forecast for Juneau - gives temps for the next 48h so we can
-   find the overnight low and make the hangar call before crews leave. */
+/* NWS digital forecast for Juneau - primary source for hourly temps, sky cover,
+   wind, precip. Fetched through proxy because forecast.weather.gov doesn't do CORS.
+   This is the same data as the hourly API but more reliable and richer (sky %, dewpt). */
+const NWS_DIGITAL_URL = 'https://forecast.weather.gov/MapClick.php?lat=58.3019&lon=-134.4197&unit=0&lg=english&FcstType=digital';
+async function loadNWSDigital(){
+  try{
+    const proxyUrl = '/api/proxy?url=' + encodeURIComponent(NWS_DIGITAL_URL);
+    const r = await fetch(proxyUrl);
+    if(!r.ok){ console.warn('NWS digital fetch failed:', r.status); return false; }
+    const html = await r.text();
+    const parsed = parseNWSDigital(html);
+    if(parsed && parsed.length){
+      state.nwsHourly = parsed;
+      state.nwsHourlyAt = Date.now();
+      state.nwsDigitalOk = true;
+      try{ renderTempBanner(); }catch(e2){}
+      return true;
+    }
+    return false;
+  }catch(e){ console.warn('NWS digital error:', e.message); return false; }
+}
+
+/* Parse the NWS digital forecast HTML table.
+   The page has one or two table blocks, each with rows:
+   row 0 = hours (3-letter day + hour), rows for Temp, Dewpt, Wind Dir, Wind Spd,
+   Sky Cover (%), Precip Prob (%), Relative Humidity (%).
+   Row labels are in the leftmost cell of each row. */
+function parseNWSDigital(html){
+  try{
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    /* Find the forecast tables - they're inside table cells with class "bg1" or
+       we can find them by looking for rows containing "Temperature" */
+    const allTables = doc.querySelectorAll('table');
+    const hours = [];
+
+    allTables.forEach(tbl => {
+      const rows = tbl.querySelectorAll('tr');
+      if(rows.length < 3) return;
+      /* Check if this table has forecast data by looking for "Temperature" in row labels */
+      let hasTemp = false;
+      rows.forEach(r => {
+        const firstCell = r.querySelector('td, th');
+        if(firstCell && /temperature/i.test(firstCell.textContent)) hasTemp = true;
+      });
+      if(!hasTemp) return;
+
+      /* Extract hour timestamps from the date/hour header rows */
+      let dates = [], hourNums = [];
+      rows.forEach(r => {
+        const cells = r.querySelectorAll('td');
+        if(!cells.length) return;
+        const label = (cells[0].textContent || '').trim().toLowerCase();
+        if(/^date/i.test(label)){
+          for(let i = 1; i < cells.length; i++) dates.push((cells[i].textContent||'').trim());
+        }
+        if(/^hour/i.test(label)){
+          for(let i = 1; i < cells.length; i++) hourNums.push(parseInt((cells[i].textContent||'').trim()));
+        }
+      });
+
+      if(!hourNums.length) return;
+
+      /* Build timestamps from date + hour.
+         Date cells often span multiple columns; we need to figure out which date
+         goes with which hour. Use the current date context. */
+      const now = new Date();
+      const tz = 'America/Juneau';
+      let baseDate = new Date(now);
+      /* Parse dates like "10/09" */
+      const parsedDates = [];
+      dates.forEach(d => {
+        const m = d.match(/(\d+)\/(\d+)/);
+        if(m){
+          const month = parseInt(m[1]) - 1, day = parseInt(m[2]);
+          const dt = new Date(now.getFullYear(), month, day);
+          parsedDates.push(dt);
+        }
+      });
+
+      /* Build a list of timestamps for each hour column.
+         Hours go 10,11,12,...23,00,01,...09 wrapping at midnight. */
+      const timestamps = [];
+      let curDate = parsedDates.length ? parsedDates[0] : new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      let prevHour = -1;
+      for(let i = 0; i < hourNums.length; i++){
+        const h = hourNums[i];
+        if(h < prevHour && prevHour >= 12){
+          /* Wrapped past midnight - advance the date */
+          curDate = new Date(curDate.getTime() + 86400000);
+        }
+        /* Also check if we jumped to a new date block */
+        if(parsedDates.length > 1){
+          /* Multiple date headers means multiple 24h blocks.
+             If hour resets to a higher number after reaching the 2nd block, use next date. */
+        }
+        /* Create Alaska time date, then convert to UTC */
+        try{
+          /* Build an ISO string in AK time and parse it */
+          const yr = curDate.getFullYear(), mo = curDate.getMonth(), dy = curDate.getDate();
+          const utcGuess = new Date(Date.UTC(yr, mo, dy, h, 0, 0));
+          /* AKDT is UTC-8, AKST is UTC-9. Approximate: */
+          const akOffset = 8 * 3600000; /* AKDT for summer; 9 for winter */
+          /* More precise: check if in DST */
+          const nov1 = new Date(yr, 10, 1); // Nov 1
+          const mar2Sun = new Date(yr, 2, 8); // approx 2nd Sunday in March
+          const isDST = utcGuess.getTime() > mar2Sun.getTime() && utcGuess.getTime() < nov1.getTime();
+          const offset = isDST ? 8 : 9;
+          timestamps.push(utcGuess.getTime() + offset * 3600000);
+        }catch(e){
+          timestamps.push(Date.now() + i * 3600000); // fallback
+        }
+        prevHour = h;
+      }
+
+      /* Now extract data rows */
+      let temps = [], dewpts = [], windDirs = [], windSpds = [], skyCover = [], precip = [], rh = [];
+      rows.forEach(r => {
+        const cells = r.querySelectorAll('td');
+        if(cells.length < 3) return;
+        const label = (cells[0].textContent || '').trim().toLowerCase();
+        const vals = [];
+        for(let i = 1; i < cells.length; i++) vals.push((cells[i].textContent||'').trim());
+
+        if(/^temperature/i.test(label)) temps = vals.map(v => parseInt(v));
+        else if(/^dewpoint/i.test(label)) dewpts = vals.map(v => parseInt(v));
+        else if(/^wind dir/i.test(label)) windDirs = vals;
+        else if(/^wind spd|^wind speed/i.test(label)) windSpds = vals.map(v => parseInt(v));
+        else if(/^sky cover|^cloud cover/i.test(label)) skyCover = vals.map(v => parseInt(v));
+        else if(/^precip|^rain/i.test(label)) precip = vals.map(v => parseInt(v));
+        else if(/^relative humid|^rh/i.test(label)) rh = vals.map(v => parseInt(v));
+      });
+
+      if(!temps.length) return;
+
+      /* Build hourly entries */
+      for(let i = 0; i < temps.length && i < timestamps.length; i++){
+        if(isNaN(temps[i])) continue;
+        /* Convert sky cover % to a text description for compatibility */
+        let skyText = '';
+        const sc = skyCover[i];
+        if(!isNaN(sc)){
+          if(sc <= 6) skyText = 'Clear';
+          else if(sc <= 25) skyText = 'Mostly Clear';
+          else if(sc <= 50) skyText = 'Partly Cloudy';
+          else if(sc <= 87) skyText = 'Mostly Cloudy';
+          else skyText = 'Cloudy';
+        }
+        hours.push({
+          t: timestamps[i],
+          tempF: temps[i],
+          dewF: !isNaN(dewpts[i]) ? dewpts[i] : null,
+          wind: !isNaN(windSpds[i]) ? windSpds[i] : null,
+          windDir: windDirs[i] || null,
+          sky: skyText,
+          skyPct: !isNaN(sc) ? sc : null,
+          pop: !isNaN(precip[i]) ? precip[i] : null,
+          rh: !isNaN(rh[i]) ? rh[i] : null,
+        });
+      }
+    });
+
+    /* Sort by time and deduplicate */
+    hours.sort((a,b) => a.t - b.t);
+    return hours.length ? hours : null;
+  }catch(e){ console.warn('parseNWSDigital error:', e); return null; }
+}
+
+/* NWS hourly API - fallback when digital forecast parsing fails */
 const NWS_PAJN_HOURLY = 'https://api.weather.gov/gridpoints/AJK/178,72/forecast/hourly';
 async function loadHourlyTemp(){
+  /* Skip if digital forecast already loaded this cycle */
+  if(state.nwsDigitalOk) return;
   try{
     const r = await fetch(NWS_PAJN_HOURLY, {headers:{accept:'application/geo+json'}});
     if(!r.ok) return;
@@ -5460,7 +5628,8 @@ function overnightLow(){
     call: hangarCall(lowest.tempF, isClear ? [{cover:'CLR'}] : [{cover:'OVC', base:3000}])};
 }
 
-/* NWS 7-day forecast for Juneau - gives named high/low periods */
+/* NWS 7-day forecast for Juneau - gives named high/low periods.
+   Supplemental to the digital forecast; provides named periods like "Today"/"Tonight" */
 const NWS_PAJN_FORECAST = 'https://api.weather.gov/gridpoints/AJK/178,72/forecast';
 async function loadDailyForecast(){
   try{
@@ -5516,7 +5685,8 @@ function renderTempBanner(){
     }
   }
 
-  /* Source 2: NWS hourly - find max and min for rest of today/tonight */
+  /* Source 2: NWS hourly (from digital forecast or API) - find max and min */
+  const hourlyLabel = state.nwsDigitalOk ? ‘NWS digital’ : ‘NWS hourly’;
   if(state.nwsHourly && state.nwsHourly.length){
     const now = Date.now();
     /* For high: look at remaining daytime hours (until ~9pm AKT) */
@@ -5525,14 +5695,14 @@ function renderTempBanner(){
     if(dayHours.length){
       const maxT = Math.max(...dayHours.map(p => p.tempF));
       fcstHighs.push(maxT);
-      highSrcs.push(‘NWS hourly’);
+      highSrcs.push(hourlyLabel);
       hasForecast = true;
     }
     /* For low: overnight window */
     const ovn = overnightLow();
     if(ovn && ovn.tempF !== null){
       fcstLows.push(ovn.tempF);
-      lowSrcs.push(‘NWS hourly’);
+      lowSrcs.push(hourlyLabel);
       hasForecast = true;
     }
   }
@@ -7360,7 +7530,19 @@ async function loadNow(){
     const asos1Text = results[results.length - 1];   // appended last, so nothing renumbers
     if(!state.notams) state.notams = {};
     loadNotams();
-    try{ loadHourlyTemp(); }catch(e){ console.warn('loadHourlyTemp deferred:', e.message); setTimeout(()=>{ try{ loadHourlyTemp(); }catch(e2){} }, 5000); }
+    /* Load NWS forecast data: try digital forecast first (most reliable, richest data),
+       then API endpoints as fallback */
+    state.nwsDigitalOk = false;
+    try{
+      loadNWSDigital().then(ok => {
+        if(!ok){
+          /* Digital failed - fall back to API hourly */
+          try{ loadHourlyTemp(); }catch(e2){}
+        }
+      }).catch(() => {
+        try{ loadHourlyTemp(); }catch(e2){}
+      });
+    }catch(e){ try{ loadHourlyTemp(); }catch(e2){} }
     try{ loadDailyForecast(); }catch(e){ console.warn('loadDailyForecast deferred:', e.message); setTimeout(()=>{ try{ loadDailyForecast(); }catch(e2){} }, 5000); }
     if(tfrJson !== null){
       const arr = Array.isArray(tfrJson) ? tfrJson : (tfrJson && tfrJson.tfrList) || [];
@@ -8013,7 +8195,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b286-fcst-fix';
+const BUILD_TAG = 'b287-nws-digital';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
