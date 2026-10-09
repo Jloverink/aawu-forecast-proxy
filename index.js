@@ -40,6 +40,8 @@ button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-vis
 .bignum .v{font-family:var(--disp);font-weight:700;font-size:34px;line-height:1}
 .bignum .l{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.8px}
 .stn{display:flex;align-items:baseline;gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:14px;flex-wrap:wrap}
+@keyframes metarFlash{0%,100%{border-color:var(--ifr);background:rgba(226,87,75,.08)}50%{border-color:transparent;background:transparent}}
+.metar-out{border:2px solid var(--ifr)!important;border-radius:6px;padding:6px 8px!important;animation:metarFlash 1.5s ease-in-out infinite;margin:3px 0}
 .stn .dot{width:9px;height:9px;border-radius:50%;flex:none;align-self:center}
 .stn .id{font-family:var(--mono);font-size:12.5px;width:44px;color:var(--mut)}
 .stn .nm{font-weight:600;width:82px}
@@ -6273,9 +6275,10 @@ function renderBoard(){
       }
       const windOnly = w.obs && w.obs.cig===null && w.obs.vis===null && w.obs.unofficial;
       const d = windOnly ? `MXAK wind ${w.obs.wdir!==null?w.obs.wdir+'\u00b0 ':''}${w.obs.wspd}${w.obs.wgst?'G'+w.obs.wgst:''} kt / no wx obs`
-        : w.obs ? `${fmtCig(w.worstCig)}${trend} / ${visTxt(w.worstVisRaw ?? w.worstVis)} sm${wxs?' / '+wxs:''}` : 'no observation';
+        : w.obs ? `${fmtCig(w.worstCig)}${trend} / ${visTxt(w.worstVisRaw ?? w.worstVis)} sm${wxs?' / '+wxs:''}` : '<b style="color:var(--ifr)">⚠ METAR OUT — NO OBSERVATION</b>';
       const obt = w.obs && w.obs.t ? `<span class="obt">${fmtLZ(w.obs.t)}</span>` : '';
-      return `<div class="stn" data-tip="stn-${s.icao}" data-panel="${s.icao}"><span class="dot cat-${w.cat}"></span><span class="id">${s.icao}</span><span class="nm">${s.name}</span><span class="d">${d}</span>${flags.length?`<span class="flag">${flags.join(' ')}</span>`:''}${obt}</div>`;
+      const noMet = !w.obs && !s.noMetar;
+      return `<div class="stn${noMet?' metar-out':''}" data-tip="stn-${s.icao}" data-panel="${s.icao}"><span class="dot cat-${w.cat}"></span><span class="id">${s.icao}</span><span class="nm">${s.name}</span><span class="d">${d}</span>${flags.length?`<span class="flag">${flags.join(' ')}</span>`:''}${obt}</div>`;
     }).join('');
     board.insertAdjacentHTML('beforeend', `
       <div class="quad" style="border-left:4px solid ${catClr(qcat)};background:${catBg(qcat)}">
@@ -8185,7 +8188,7 @@ function altimFromRaw(raw){
 }
 const RWYS = {PAHN:[80,260], PAGY:[20,200], PAGS:[110,290,20,200], PAOH:[60,240], PAJN:[80,260], PAFE:[110,290], PASI:[110,290], PAKW:[20,200], PAKT:[110,290], PAPG:[50,230], PAWG:[100,280], PAYA:[110,290,20,200]};
 const RWY_DIMS = {PAJN:['8,457 x 150'], PAOH:['3,367 x 75'], PAGS:['6,720 x 150','3,010 x 60'], PAFE:['4,000 x 100'], PASI:['6,500 x 150'], PAKT:['7,500 x 150'], PAKW:['5,000 x 100'], PAPG:['6,400 x 150'], PAWG:['6,000 x 150'], PAYA:['7,745 x 150','5,500 x 150'], PAHN:[''], PAGY:['']};
-const BUILD_TAG = 'b291-taf-notify';
+const BUILD_TAG = 'b292-metar-out-warn';
 /* ================= Crosswind / FRAT calculator =================
    Standalone what-if. Enter any wind against any station's runways and read the
    components. Same crosswind() the warnings use, so the two can never disagree.
@@ -10009,7 +10012,7 @@ function nowLineParts(st, w){
       : [
         veiaFrontHTML(w),
         o.unofficial ? `MXAK ${windHTML(st.icao, o.wdir, o.wspd, o.wgst)} <span style="color:var(--mut)">wind only \u00b7 ${fmtLZ(o.t)}</span>` : null,
-        (!o.unofficial && !w.veia) ? '<span style="color:var(--mut)">no observation</span>' : null,
+        (!o.unofficial && !w.veia) ? '<b style="color:var(--ifr);font-size:15px">⚠ METAR OUT — NO OBSERVATION</b>' : null,
       ].filter(Boolean).join(' &nbsp;');
     /* The altimeter, density altitude and pressure trend are not an observation of the sky,
        so they are pulled out of the weather string and given their own place on line three. */
@@ -10592,7 +10595,7 @@ function openPanel(icao, cls){
     <div style="flex:1;min-width:260px">
       <h3 style="margin-top:0">Current</h3>
       <div class="row" style="color:var(--mut)">Wind <b style="color:var(--ink)">${wdir!==null?wdir+'\u00b0':'VRB'} at ${o.wspd||0}${o.wgst?' G'+o.wgst:''} kt</b>, ${fmtCig(o.cig)}, ${visTxt(o.visRaw ?? o.vis)} sm, temp <b style="color:var(--ink)">${o.temp!==undefined&&o.temp!==null?o.temp+'\u00b0C':'?'}</b>${o.dewp!==undefined&&o.dewp!==null?' / dp '+o.dewp+'\u00b0C':''}</div>
-      <div class="mono" style="margin-top:4px">${o.raw||'no observation'}</div>
+      <div class="mono" style="margin-top:4px">${o.raw||'<b style="color:var(--ifr)">⚠ METAR OUT</b>'}</div>
       <h3>FRAT class</h3>
       <div style="display:flex;gap:6px">
         ${['float','c208','pc12'].map(k=>`<button class="${k===cls?'primary':''}" data-cls="${k}" data-clsfor="${icao}">${k==='float'?'Floats/Amphibs':k==='c208'?'C208':'PC-12'}</button>`).join('')}
